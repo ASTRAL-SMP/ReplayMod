@@ -50,6 +50,9 @@ import net.minecraft.network.packet.s2c.play.PlayerRespawnS2CPacket;
 import net.minecraft.network.packet.s2c.play.SignEditorOpenS2CPacket;
 import net.minecraft.network.packet.s2c.play.StatisticsS2CPacket;
 import net.minecraft.text.Text;
+//#if MC>=11400 && MC<11900
+import net.minecraft.text.LiteralText;
+//#endif
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import org.apache.commons.io.FileUtils;
@@ -286,7 +289,7 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
     /**
      * Whether we need to restart the current replay. E.g. when jumping backwards in time
      */
-    protected boolean startFromBeginning = true;
+    protected boolean startFromBeginning = false;
 
     /**
      * Whether to terminate the replay. This only has an effect on the async mode and is {@code true} during sync mode.
@@ -1191,6 +1194,11 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
                                     setReplaySpeed(0);
                                 }
                             } catch (EOFException eof) {
+                                if (!hasWorldLoaded) {
+                                    abortReplayBeforeWorldLoaded();
+                                    break REPLAY_LOOP;
+                                }
+
                                 // Reached end of file
                                 // Pause the replay which will cause it to freeze before getting restarted
                                 setReplaySpeed(0);
@@ -1230,6 +1238,33 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
             }
         }
     };
+
+    private void abortReplayBeforeWorldLoaded() {
+        LOGGER.error("Replay ended before a world could be loaded. The replay file is likely incomplete or corrupt.");
+        terminateReplay();
+        ReplayMod.instance.runLater(() -> {
+            try {
+                replayHandler.endReplay();
+            } catch (IOException e) {
+                LOGGER.error("Failed to clean up after an incomplete replay failed to load.", e);
+            }
+            mc.openScreen(new NoticeScreen(
+                    //#if MC>=11400
+                    () -> mc.openScreen(null),
+                    //#if MC>=11900
+                    //$$ Text.literal("This replay could not be loaded."),
+                    //$$ Text.literal("The recording appears to be incomplete or corrupt.")
+                    //#else
+                    new LiteralText("This replay could not be loaded."),
+                    new LiteralText("The recording appears to be incomplete or corrupt.")
+                    //#endif
+                    //#else
+                    //$$ "This replay could not be loaded.",
+                    //$$ "The recording appears to be incomplete or corrupt."
+                    //#endif
+            ));
+        });
+    }
 
     /**
      * Return whether this replay sender is currently rushing. When rushing, all packets are sent without waiting until
