@@ -120,6 +120,17 @@ public class MarkerProcessor {
             return Collections.singletonList(Pair.of(path, metaData));
         }
 
+        // Diagnostic: per-phase timing so we can pick the right optimization target before
+        // committing to GPU/JNI. Remove once root cause is confirmed (3.2.6).
+        long applyStart = System.nanoTime();
+        long readNs = 0;
+        long filterNs = 0;
+        long writeNs = 0;
+        long saveNs = 0;
+        long packetCount = 0;
+        long byteCount = 0;
+        org.apache.logging.log4j.Logger LOGGER = org.apache.logging.log4j.LogManager.getLogger("MarkerProcessorTiming");
+
         String replayName = FilenameUtils.getBaseName(path.getFileName().toString());
         int splitCounter = 0;
 
@@ -148,7 +159,9 @@ public class MarkerProcessor {
             int timeOffset = 0;
             SquashFilter cutFilter = null;
             int startCutOffset = 0;
+            long readT0 = System.nanoTime();
             PacketData nextPacket = replayInputStream.readPacket();
+            readNs += System.nanoTime() - readT0;
             Marker nextMarker = markerIterator.next();
 
             while (nextPacket != null && outputFileSuffixes.hasNext()) {
@@ -210,18 +223,28 @@ public class MarkerProcessor {
                                 continue;
                             }
 
+                            long filterT0 = System.nanoTime();
                             dimensionTracker.onPacket(null, nextPacket);
                             if (hasFurtherOutputs) {
                                 squashFilter.onPacket(null, nextPacket);
                             }
                             if (cutFilter != null) {
                                 cutFilter.onPacket(null, nextPacket);
+                                filterNs += System.nanoTime() - filterT0;
                             } else {
+                                int packetBytes = nextPacket.getPacket().getBuf().readableBytes();
+                                filterNs += System.nanoTime() - filterT0;
+                                long writeT0 = System.nanoTime();
                                 replayOutputStream.write(nextPacket.getTime() - timeOffset, nextPacket.getPacket().copy());
+                                writeNs += System.nanoTime() - writeT0;
                                 duration = nextPacket.getTime() - timeOffset;
+                                byteCount += packetBytes;
                             }
+                            packetCount++;
                             nextPacket.release();
+                            long readT1 = System.nanoTime();
                             nextPacket = replayInputStream.readPacket();
+                            readNs += System.nanoTime() - readT1;
                             if (nextPacket != null) {
                                 progress.accept((float) nextPacket.getTime() / (float) inputDuration);
                             } else {
@@ -250,7 +273,9 @@ public class MarkerProcessor {
                         }
                     }
 
+                    long saveT0 = System.nanoTime();
                     outputReplayFile.save();
+                    saveNs += System.nanoTime() - saveT0;
 
                     outputPaths.add(Pair.of(outputPath, metaData));
                 }
@@ -261,6 +286,19 @@ public class MarkerProcessor {
                 cutFilter.release();
             }
         }
+
+        long totalNs = System.nanoTime() - applyStart;
+        LOGGER.info(String.format(
+                "MarkerProcessor.apply: total=%.2fs read=%.2fs filter=%.2fs write=%.2fs save=%.2fs other=%.2fs (packets=%d, bytes=%dMB, outputs=%d)",
+                totalNs / 1e9,
+                readNs / 1e9,
+                filterNs / 1e9,
+                writeNs / 1e9,
+                saveNs / 1e9,
+                (totalNs - readNs - filterNs - writeNs - saveNs) / 1e9,
+                packetCount,
+                byteCount / (1024 * 1024),
+                outputPaths.size()));
 
         return outputPaths;
     }
