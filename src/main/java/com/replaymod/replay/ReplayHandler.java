@@ -253,9 +253,12 @@ public class ReplayHandler {
 
         fullReplaySender.terminateReplay();
         //#if MC>=10800
-        if (quickMode) {
-            quickReplaySender.unregister();
-        }
+        // Notify QuickReplaySender unconditionally — background QuickMode init may still be
+        // running even when quickMode hasn't been switched on yet (initial enableByDefault path).
+        // Without this, closing the replayFile below races with the analyser and produces a
+        // misleading "Initializing quick replay sender" ERROR in the log (see log22).
+        quickReplaySender.notifyShuttingDown();
+        quickReplaySender.unregister();
         //#endif
 
         replayFile.save();
@@ -474,6 +477,13 @@ public class ReplayHandler {
 
                 @Override
                 public void onFailure(@Nonnull Throwable t) {
+                    // Don't bother surfacing the failure when the replay was closed by the
+                    // user mid-init (notifyShuttingDown set in endReplay). Avoids a noisy
+                    // WARN + a Full Mode resume on a session that no longer has a world.
+                    if (channel == null || !channel.isOpen()) {
+                        popup.close();
+                        return;
+                    }
                     LOGGER.warn("Failed to initialize quick mode. Continuing in Full Mode.", t);
                     popup.close();
                     if (!quickMode) {
