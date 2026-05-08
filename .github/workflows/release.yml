@@ -13,21 +13,25 @@ on:
         required: true
         type: string
 
+# One release run per ref at a time. Newer pushes cancel older in-flight runs
+# so we don't burn CI minutes on superseded commits.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
-          # On stable branch pushes we want the branch HEAD (so we can read
-          # version.txt and create a tag from it). On tag pushes / dispatch we
-          # want the tag itself.
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Resolve release tag
@@ -58,10 +62,9 @@ jobs:
               echo "tag=" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            # Tag the commit that last modified version.txt — this matches what
-            # root.gradle.kts treats as the "release commit", so the resulting
-            # jars are named replaymod-<mc>-<version>.jar without the
-            # `-N-g<sha>-dirty` suffix.
+            # Tag the commit that last modified version.txt — root.gradle.kts
+            # treats that as the "release commit", so the resulting jars are
+            # named replaymod-<mc>-<version>.jar without the `-N-g<sha>` suffix.
             release_sha="$(git log -n 1 --pretty=format:%H -- version.txt)"
             if [[ -z "$release_sha" ]]; then
               release_sha="${GITHUB_SHA}"
@@ -86,48 +89,70 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      # ---- Build (only when we actually have something to release) ----------
+
+      - name: Cache Gradle / loom
+        if: steps.release.outputs.tag != ''
+        uses: actions/cache@v4
+        with:
+          # Loom downloads MC + decompilation output here; missing this turns a
+          # ~3 minute build into a ~10 minute one.
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle/loom-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'libs/ReplayStudio/**/*.gradle*') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Cache Windows native encoder DLL
+        if: steps.release.outputs.tag != ''
+        id: dll-cache
+        uses: actions/cache@v4
+        with:
+          path: native/replaymod-native-encoder/build/windows/replaymod_native_encoder.dll
+          key: native-encoder-dll-${{ hashFiles('native/replaymod-native-encoder/**') }}
+
       - name: Install Nix
         if: steps.release.outputs.tag != ''
         uses: DeterminateSystems/nix-installer-action@v14
 
-      - name: Build ReplayMod jars (1.19.4 + 1.21.4)
+      - name: Cache Nix store
+        if: steps.release.outputs.tag != ''
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: Build ReplayMod jars (1.19.4 + 1.21.4 in parallel)
         if: steps.release.outputs.tag != ''
         run: |
           rm -rf versions/1.19.4/build/libs versions/1.21.4/build/libs
-          nix develop --command bash -lc './gradlew --no-daemon $REPLAYMOD_GRADLE_TOOLCHAINS :1.19.4:bundleJar :1.21.4:bundleJar'
+          # --parallel: run 1.19.4 / 1.21.4 sub-builds concurrently
+          # --build-cache: reuse compilation outputs from cached Gradle dirs
+          # --configuration-cache: skip configuration on cached graphs
+          nix develop --command bash -lc './gradlew \
+            --no-daemon --parallel --build-cache --configuration-cache \
+            $REPLAYMOD_GRADLE_TOOLCHAINS \
+            :1.19.4:bundleJar :1.21.4:bundleJar'
 
       - name: Build native Windows encoder DLL
-        if: steps.release.outputs.tag != ''
+        if: steps.release.outputs.tag != '' && steps.dll-cache.outputs.cache-hit != 'true'
         run: nix develop --command native/replaymod-native-encoder/build-windows.sh
 
       - name: Collect release artifacts
         if: steps.release.outputs.tag != ''
-        id: collect
         shell: bash
         run: |
           mkdir -p ci-artifacts
-          # Pick up only the publishable, non-sources, non-obf jars for the two
-          # targeted Minecraft versions.
           find versions/1.19.4/build/libs versions/1.21.4/build/libs -maxdepth 1 -type f \
             -name '*.jar' ! -name '*-sources.jar' ! -name '*-obf.jar' \
             -exec cp {} ci-artifacts/ \;
           cp native/replaymod-native-encoder/build/windows/replaymod_native_encoder.dll ci-artifacts/
-          # Sanity check: 1.19.4 jar + 1.21.4 jar + native dll
           count="$(find ci-artifacts -type f | wc -l)"
           if [[ "$count" -ne 3 ]]; then
-            echo "Expected exactly 3 release artifacts (1.19.4 jar, 1.21.4 jar, dll) but found $count:" >&2
+            echo "Expected 3 release artifacts (1.19.4 jar, 1.21.4 jar, dll) but found $count:" >&2
             ls -lh ci-artifacts >&2
             exit 1
           fi
           ls -lh ci-artifacts
-
-      - name: Upload workflow artifacts (for debugging / manual download)
-        if: steps.release.outputs.tag != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: replaymod-${{ steps.release.outputs.tag }}
-          path: ci-artifacts/*
-          if-no-files-found: error
 
       - name: Publish GitHub Release
         if: steps.release.outputs.tag != ''
