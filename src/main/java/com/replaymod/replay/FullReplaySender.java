@@ -1220,6 +1220,14 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
                                 }
                                 break;
                             } catch (IOException e) {
+                                if (terminate) {
+                                    break REPLAY_LOOP;
+                                }
+                                if (!hasWorldLoaded) {
+                                    LOGGER.error("Replay packet stream failed before a world could be loaded.", e);
+                                    abortReplayBeforeWorldLoaded("Replay packet data could not be read before a world could be loaded.");
+                                    break REPLAY_LOOP;
+                                }
                                 LOGGER.error("Error reading replay packet. Stopping replay sender to avoid repeated log spam.", e);
                                 break REPLAY_LOOP;
                             }
