@@ -56,6 +56,21 @@ public class DelegatingReplayFile implements ReplayFile {
     }
 
     @Override
+    public OutputStream writeCacheRaw(String entry) throws IOException {
+        return this.delegate.writeCacheRaw(entry);
+    }
+
+    @Override
+    public java.nio.MappedByteBuffer getCacheMmap(String entry) throws IOException {
+        return this.delegate.getCacheMmap(entry);
+    }
+
+    @Override
+    public Optional<InputStream> getCacheRaw(String entry) throws IOException {
+        return this.delegate.getCacheRaw(entry);
+    }
+
+    @Override
     public void remove(String entry) throws IOException {
         this.delegate.remove(entry);
     }
