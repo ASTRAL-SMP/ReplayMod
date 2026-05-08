@@ -58,13 +58,23 @@ jobs:
               echo "tag=" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            # Create the tag (if it doesn't already exist) on the current SHA.
+            # Tag the commit that last modified version.txt — this matches what
+            # root.gradle.kts treats as the "release commit", so the resulting
+            # jars are named replaymod-<mc>-<version>.jar without the
+            # `-N-g<sha>-dirty` suffix.
+            release_sha="$(git log -n 1 --pretty=format:%H -- version.txt)"
+            if [[ -z "$release_sha" ]]; then
+              release_sha="${GITHUB_SHA}"
+            fi
             if ! git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
               git config user.name "github-actions[bot]"
               git config user.email "github-actions[bot]@users.noreply.github.com"
-              git tag -a "$tag" -m "Release $tag" "${GITHUB_SHA}"
+              git tag -a "$tag" -m "Release $tag" "$release_sha"
               git push origin "refs/tags/$tag"
             fi
+            # Re-checkout that commit so subsequent build steps see the clean
+            # release tree (matching the tag we just created).
+            git checkout --detach "$release_sha"
           fi
           if [[ -z "$tag" ]]; then
             echo "Could not resolve release tag" >&2
@@ -127,6 +137,6 @@ jobs:
           tag="${{ steps.release.outputs.tag }}"
           if ! gh release view "$tag" >/dev/null 2>&1; then
             printf 'Automated ReplayMod release for %s.\n\nThis release contains:\n- ReplayMod jar for Minecraft 1.19.4 (Fabric)\n- ReplayMod jar for Minecraft 1.21.4 (Fabric)\n- Native Windows encoder DLL (`replaymod_native_encoder.dll`)\n' "$tag" > release-notes.md
-            gh release create "$tag" --title "$tag" --notes-file release-notes.md --target "${GITHUB_SHA}"
+            gh release create "$tag" --title "$tag" --notes-file release-notes.md
           fi
           gh release upload "$tag" ci-artifacts/* --clobber
