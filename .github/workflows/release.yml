@@ -2,12 +2,14 @@ name: Release
 
 on:
   push:
+    branches:
+      - stable
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)publish (e.g. v1.21.4-2.6.27)"
+        description: "Tag to (re)publish (e.g. v3.0.0). Required for workflow_dispatch."
         required: true
         type: string
 
@@ -23,16 +25,46 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+          # On stable branch pushes we want the branch HEAD (so we can read
+          # version.txt and create a tag from it). On tag pushes / dispatch we
+          # want the tag itself.
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Resolve release tag
         id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          set -euo pipefail
+          event="${{ github.event_name }}"
+          if [[ "$event" == "workflow_dispatch" ]]; then
             tag="${{ github.event.inputs.tag }}"
-          else
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             tag="${GITHUB_REF_NAME}"
+          else
+            # Branch push (stable). Auto-derive tag from version.txt.
+            version="$(head -n1 version.txt | tr -d '\r\n[:space:]')"
+            if [[ -z "$version" ]]; then
+              echo "version.txt is empty, nothing to release" >&2
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            tag="v$version"
+            # Bail early if the release already exists, so re-pushing stable
+            # without a version bump doesn't keep re-uploading.
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag" >/dev/null 2>&1; then
+              echo "Release $tag already exists; skipping."
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Create the tag (if it doesn't already exist) on the current SHA.
+            if ! git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git tag -a "$tag" -m "Release $tag" "${GITHUB_SHA}"
+              git push origin "refs/tags/$tag"
+            fi
           fi
           if [[ -z "$tag" ]]; then
             echo "Could not resolve release tag" >&2
@@ -45,17 +77,21 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Install Nix
+        if: steps.release.outputs.tag != ''
         uses: DeterminateSystems/nix-installer-action@v14
 
       - name: Build ReplayMod jars (1.19.4 + 1.21.4)
+        if: steps.release.outputs.tag != ''
         run: |
           rm -rf versions/1.19.4/build/libs versions/1.21.4/build/libs
           nix develop --command bash -lc './gradlew --no-daemon $REPLAYMOD_GRADLE_TOOLCHAINS :1.19.4:bundleJar :1.21.4:bundleJar'
 
       - name: Build native Windows encoder DLL
+        if: steps.release.outputs.tag != ''
         run: nix develop --command native/replaymod-native-encoder/build-windows.sh
 
       - name: Collect release artifacts
+        if: steps.release.outputs.tag != ''
         id: collect
         shell: bash
         run: |
@@ -76,6 +112,7 @@ jobs:
           ls -lh ci-artifacts
 
       - name: Upload workflow artifacts (for debugging / manual download)
+        if: steps.release.outputs.tag != ''
         uses: actions/upload-artifact@v4
         with:
           name: replaymod-${{ steps.release.outputs.tag }}
@@ -83,12 +120,13 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub Release
+        if: steps.release.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ steps.release.outputs.tag }}"
           if ! gh release view "$tag" >/dev/null 2>&1; then
             printf 'Automated ReplayMod release for %s.\n\nThis release contains:\n- ReplayMod jar for Minecraft 1.19.4 (Fabric)\n- ReplayMod jar for Minecraft 1.21.4 (Fabric)\n- Native Windows encoder DLL (`replaymod_native_encoder.dll`)\n' "$tag" > release-notes.md
-            gh release create "$tag" --title "$tag" --notes-file release-notes.md
+            gh release create "$tag" --title "$tag" --notes-file release-notes.md --target "${GITHUB_SHA}"
           fi
           gh release upload "$tag" ci-artifacts/* --clobber
