@@ -62,22 +62,23 @@ jobs:
               echo "tag=" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            # Tag the commit that last modified version.txt — root.gradle.kts
-            # treats that as the "release commit", so the resulting jars are
-            # named replaymod-<mc>-<version>.jar without the `-N-g<sha>` suffix.
-            release_sha="$(git log -n 1 --pretty=format:%H -- version.txt)"
-            if [[ -z "$release_sha" ]]; then
-              release_sha="${GITHUB_SHA}"
-            fi
+            # Tag the *current* default-branch HEAD. Tagging an older commit
+            # that has different workflow files than HEAD trips GitHub's
+            # GitHub-App protection ("refusing to allow a GitHub App to
+            # create or update workflow ... without `workflows` permission")
+            # because GITHUB_TOKEN can't grant itself `workflows`. Tagging
+            # HEAD avoids that entirely.
+            #
+            # The downside is that root.gradle.kts derives a versioned suffix
+            # ("3.0.0-N-g<sha>") whenever HEAD != version.txt-bump commit; we
+            # rename the produced jars to the clean form in the
+            # "Collect release artifacts" step below.
             if ! git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
               git config user.name "github-actions[bot]"
               git config user.email "github-actions[bot]@users.noreply.github.com"
-              git tag -a "$tag" -m "Release $tag" "$release_sha"
+              git tag -a "$tag" -m "Release $tag" "${GITHUB_SHA}"
               git push origin "refs/tags/$tag"
             fi
-            # Re-checkout that commit so subsequent build steps see the clean
-            # release tree (matching the tag we just created).
-            git checkout --detach "$release_sha"
           fi
           if [[ -z "$tag" ]]; then
             echo "Could not resolve release tag" >&2
@@ -137,14 +138,35 @@ jobs:
         if: steps.release.outputs.tag != '' && steps.dll-cache.outputs.cache-hit != 'true'
         run: nix develop --command native/replaymod-native-encoder/build-windows.sh
 
-      - name: Collect release artifacts
+      - name: Collect release artifacts (rename to clean version)
         if: steps.release.outputs.tag != ''
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p ci-artifacts
-          find versions/1.19.4/build/libs versions/1.21.4/build/libs -maxdepth 1 -type f \
-            -name '*.jar' ! -name '*-sources.jar' ! -name '*-obf.jar' \
-            -exec cp {} ci-artifacts/ \;
+          # The release tag is "v<version>" (e.g. v3.0.0); strip the "v" to
+          # match the jar version that root.gradle.kts uses when version.txt
+          # matches HEAD. Whatever Gradle produced (potentially with a
+          # "-<n>-g<sha>" suffix) gets copied out under the clean name.
+          version="${{ steps.release.outputs.tag }}"
+          version="${version#v}"
+          shopt -s nullglob
+          for libdir in versions/1.19.4/build/libs versions/1.21.4/build/libs; do
+            mc="$(basename "$(dirname "$(dirname "$libdir")")")"
+            picked=()
+            for f in "$libdir"/replaymod-${mc}-*.jar; do
+              case "$f" in
+                *-sources.jar|*-obf.jar) ;;
+                *) picked+=("$f") ;;
+              esac
+            done
+            if [[ ${#picked[@]} -ne 1 ]]; then
+              echo "Expected exactly one publishable jar in $libdir, found ${#picked[@]}:" >&2
+              ls -la "$libdir" >&2
+              exit 1
+            fi
+            cp -v "${picked[0]}" "ci-artifacts/replaymod-${mc}-${version}.jar"
+          done
           cp native/replaymod-native-encoder/build/windows/replaymod_native_encoder.dll ci-artifacts/
           count="$(find ci-artifacts -type f | wc -l)"
           if [[ "$count" -ne 3 ]]; then
