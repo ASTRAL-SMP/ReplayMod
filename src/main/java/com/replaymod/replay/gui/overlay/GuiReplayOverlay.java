@@ -50,7 +50,7 @@ public class GuiReplayOverlay extends AbstractGuiOverlay<GuiReplayOverlay> {
             return tooltip;
         }
     }.setSize(20, 20).setTexture(ReplayMod.TEXTURE, TEXTURE_SIZE).setTooltip(new GuiTooltip());
-    public final GuiSlider speedSlider = new GuiSlider().setSize(100, 20).setSteps(37); // 0.0 is not included
+    public final GuiSlider speedSlider = new GuiSlider().setSize(100, 20).setSteps(43); // 0.0 is not included; see getSpeedSliderValue() for the mapping
     public final GuiMarkerTimeline timeline;
 
     /**
@@ -134,12 +134,25 @@ public class GuiReplayOverlay extends AbstractGuiOverlay<GuiReplayOverlay> {
         }).setLength(replayHandler.getReplayDuration());
     }
 
+    // Slider position to speed multiplier mapping. Total of 44 positions (slider
+    // value 0..43, displayed value 1..44):
+    //  -  1.. 9 (9 positions): 0.1x .. 0.9x in 0.1 increments  — fine slow-mo control
+    //  - 10..38 (29 positions): 1.0x .. 8.0x in 0.25 increments — original 8x range
+    //  - 39..44 (6 positions): 12, 16, 24, 32, 48, 64x         — high-speed extension
+    private static final double[] HIGH_SPEED_STEPS = {12d, 16d, 24d, 32d, 48d, 64d};
+
     public double getSpeedSliderValue() {
         int value = speedSlider.getValue() + 1;
         if (value <= 9) {
             return value / 10d;
-        } else {
+        } else if (value <= 38) {
             return 1 + (0.25d * (value - 10));
+        } else {
+            int idx = value - 39;
+            if (idx >= HIGH_SPEED_STEPS.length) {
+                idx = HIGH_SPEED_STEPS.length - 1;
+            }
+            return HIGH_SPEED_STEPS[idx];
         }
     }
 
