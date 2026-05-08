@@ -30,6 +30,17 @@ public interface ReplaySender {
     void setAsyncMode(boolean async);
     void setSyncModeAndWait();
 
+    /**
+     * Whether the replay is currently fast-forwarding through a large amount of packets
+     * (sync-mode `sendPacketsTill` for a big jump, or async-mode hurrying). When this is
+     * {@code true} the user is staring at a loading screen and we can drop work whose only
+     * visible effect would be incremental world-renderer state, since we'll force a full
+     * world re-render once it returns to {@code false}.
+     */
+    default boolean isFastForwarding() {
+        return false;
+    }
+
     void jumpToTime(int value); // async
     void sendPacketsTill(int replayTime); // sync
 }

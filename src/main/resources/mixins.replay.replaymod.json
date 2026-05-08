@@ -30,6 +30,9 @@
     //#if MC>=11700
     //$$ "WorldAccessor",
     //#endif
+    //#if MC>=11600
+    "Mixin_SkipBlockRenderUpdatesDuringFastForward",
+    //#endif
     "EntityLivingBaseAccessor",
     //#if MC>=11400
     "Mixin_ShowSpectatedHand_Iris",

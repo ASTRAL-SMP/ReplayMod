@@ -366,9 +366,38 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
         if (asyncMode) {
             this.terminate = false;
             new Thread(asyncSender, "replaymod-async-sender").start();
+            // Sync→async transition: we just finished fast-forwarding through a (potentially
+            // large) jump. While fast-forwarding we suppressed per-block render scheduling
+            // (see Mixin_SkipBlockRenderUpdatesDuringFastForward), so the world-renderer's
+            // section meshes are stale w.r.t. the actual block state. Discard them and let
+            // Sodium / the chunk builder rebuild on demand against the up-to-date world.
+            replayMod_reloadWorldRendererIfDirty();
         } else {
             this.terminate = true;
         }
+    }
+
+    // Set by the skip-block-render mixin when it actually drops a `scheduleBlockRender`
+    // call. We only need to pay the cost of a full world-renderer reload if at least one
+    // such call was suppressed; for jumps that didn't touch any blocks the reload is a
+    // no-op we can skip.
+    private volatile boolean skippedRenderUpdates;
+
+    public void replayMod_markSkippedRenderUpdate() {
+        skippedRenderUpdates = true;
+    }
+
+    private void replayMod_reloadWorldRendererIfDirty() {
+        if (!skippedRenderUpdates) {
+            return;
+        }
+        skippedRenderUpdates = false;
+        // worldRenderer.reload() must run on the render thread.
+        ReplayMod.instance.runLater(() -> {
+            if (mc.worldRenderer != null && mc.world != null) {
+                mc.worldRenderer.reload();
+            }
+        });
     }
 
     @Override
@@ -1211,11 +1240,23 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
         return desiredTimeStamp != -1;
     }
 
+    @Override
+    public boolean isFastForwarding() {
+        // Sync mode (sendPacketsTill is being driven by an outer doJump loop) OR
+        // async-mode hurrying. In either case the user is staring at a loading
+        // screen and per-block render scheduling is wasted CPU.
+        return !asyncMode || isHurrying();
+    }
+
     /**
      * Cancels the hurrying.
      */
     public void stopHurrying() {
         desiredTimeStamp = -1;
+        // Hurrying is itself a form of fast-forwarding (we suppress block-render
+        // scheduling for it too); reload the world renderer if the hurry actually
+        // skipped any updates.
+        replayMod_reloadWorldRendererIfDirty();
     }
 
     /**
