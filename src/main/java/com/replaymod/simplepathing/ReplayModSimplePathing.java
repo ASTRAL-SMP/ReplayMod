@@ -178,6 +178,12 @@ public class ReplayModSimplePathing extends EventRegistrations implements Module
         if (guiPathing != null) {
             guiPathing.cancelEntityTrackerLoading();
         }
+        // saveService can be null here when endReplay is invoked before onReplayOpened finished
+        // (e.g. abortReplayBeforeWorldLoaded firing during initial load) or when this callback
+        // fires twice for the same replay.
+        if (saveService == null) {
+            return;
+        }
         flushTimelineSave(replayHandler.getReplayFile());
         saveService.shutdown();
         try {
