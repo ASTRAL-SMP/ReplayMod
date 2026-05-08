@@ -315,7 +315,21 @@ public class ReplayHandler {
             public void exceptionCaught(ChannelHandlerContext ctx, Throwable t) {
                 if (!networkExceptionLogged) {
                     networkExceptionLogged = true;
-                    LOGGER.error("Replay packet handling failed. Further packet errors in this replay will be suppressed.", t);
+                    //#if MC>=10800
+                    if (quickMode) {
+                        // Quick Mode failures fall back to Full Mode (handled in
+                        // QuickReplaySender.disableAfterError). Log a short single line so
+                        // users don't think this is a crash; keep level=ERROR so log4j
+                        // routing matches what worked in v3.1.0 (a level demote in v3.1.2
+                        // correlated with a 30s freeze on heavy modpacks).
+                        LOGGER.error("Replay packet handling failed in Quick Mode; falling back to Full Mode. ({}: {})",
+                                t.getClass().getSimpleName(), t.getMessage());
+                    } else {
+                        LOGGER.error("Replay packet handling failed. Further packet errors in this replay will be suppressed.", t);
+                    }
+                    //#else
+                    //$$ LOGGER.error("Replay packet handling failed. Further packet errors in this replay will be suppressed.", t);
+                    //#endif
                 }
                 //#if MC>=10800
                 if (quickMode) {

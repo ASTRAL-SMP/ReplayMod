@@ -113,7 +113,13 @@ public class QuickReplaySender extends ChannelHandlerAdapter implements ReplaySe
         unregister();
         if (!errorLogged) {
             errorLogged = true;
-            LOGGER.error("Quick Mode replay state is incompatible with this replay or modpack. Disabling Quick Mode.", throwable);
+            // Keep level=ERROR (v3.1.2's switch to INFO/DEBUG correlated with a 30s freeze
+            // for reasons we never pinned down — possibly log4j filter routing or async
+            // appender behaviour in heavy modpacks). Drop only the throwable argument so we
+            // don't flood the log with a multi-page stack trace for what is a designed
+            // fallback path (Quick Mode cache mismatch -> Full Mode).
+            LOGGER.error("Quick Mode replay state is incompatible with this replay or modpack. Falling back to Full Mode. ({}: {})",
+                    throwable.getClass().getSimpleName(), throwable.getMessage());
         }
         // Without this, disabling Quick Mode leaves the channel pipeline pointing at a now-dead
         // quickReplaySender while fullReplaySender is still in sync mode (left over from
