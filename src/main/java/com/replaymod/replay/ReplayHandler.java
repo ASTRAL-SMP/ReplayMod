@@ -36,7 +36,6 @@ import net.minecraft.client.util.Window;
 import net.minecraft.network.DecoderHandler;
 import net.minecraft.network.NetworkState;
 import net.minecraft.network.PacketEncoder;
-import net.minecraft.util.crash.CrashReport;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.network.ClientConnection;
@@ -475,8 +474,11 @@ public class ReplayHandler {
 
                 @Override
                 public void onFailure(@Nonnull Throwable t) {
-                    String message = "Failed to initialize quick mode. It will not be available.";
-                    Utils.error(LOGGER, overlay, CrashReport.create(t, message), popup::close);
+                    LOGGER.warn("Failed to initialize quick mode. Continuing in Full Mode.", t);
+                    popup.close();
+                    if (!quickMode) {
+                        fullReplaySender.setAsyncMode(true);
+                    }
                 }
             });
         }
