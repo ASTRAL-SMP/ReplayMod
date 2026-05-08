@@ -46,6 +46,10 @@ public class QuickReplaySender extends ChannelHandlerAdapter implements ReplaySe
     private boolean disabledDueToError;
     private boolean errorLogged;
     private boolean eventHandlerRegistered;
+    // Set when the owning ReplayHandler is shutting down (endReplay). Background QuickMode init
+    // running on REPLAY_POOL is racing with the file being closed, so any IO error after this
+    // flag is set is expected and should not be surfaced as an error (see log22).
+    private volatile boolean terminated;
 
     private int currentTimeStamp;
     private double replaySpeed = 1;
@@ -107,6 +111,15 @@ public class QuickReplaySender extends ChannelHandlerAdapter implements ReplaySe
         eventHandler.unregister();
     }
 
+    /**
+     * Marks this sender as terminated so background initialization (running on REPLAY_POOL)
+     * can distinguish "the file was closed because the user is leaving the replay" from a
+     * real load failure, and skip the noisy error logging in that case.
+     */
+    public void notifyShuttingDown() {
+        terminated = true;
+    }
+
     public void disableAfterError(Throwable throwable) {
         disabledDueToError = true;
         asyncMode = false;
@@ -166,6 +179,13 @@ public class QuickReplaySender extends ChannelHandlerAdapter implements ReplaySe
                 replay.load(progress);
                 LOGGER.info("Initialized quick replay sender in " + (System.currentTimeMillis() - start) + "ms");
             } catch (Throwable e) {
+                if (terminated) {
+                    // Replay is being closed; the IOException is the file being closed under us.
+                    // Fail the promise (so any waiting callbacks unblock) but don't log/chat —
+                    // the user already initiated the close.
+                    mod.getCore().runLaterWithoutLock(() -> promise.setException(e));
+                    return;
+                }
                 LOGGER.error("Initializing quick replay sender:", e);
                 mod.getCore().runLaterWithoutLock(() -> {
                     mod.getCore().printWarningToChat("Error initializing quick replay sender: %s", e.getLocalizedMessage());

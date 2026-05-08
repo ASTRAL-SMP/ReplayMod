@@ -290,11 +290,13 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
     /**
      * Whether we need to restart the current replay. E.g. when jumping backwards in time
      */
-    // Initial value must be true: the asyncSender's first iteration relies on this to take the
-    // restart path (close replayIn, runSync(restartedReplay)) before reading any packets.
-    // Setting it to false in 3.1.7 broke replay loading on some files (cache reanalysis would
-    // race with the leaked initial replayIn and ZipFile state). Reverting to 3.1.6 behavior.
-    protected boolean startFromBeginning = true;
+    // Must be false on initial load: setting it true takes the asyncSender into its restart
+    // cleanup path on iteration 1, which calls runSync(restartedReplay) inside synchronized.
+    // restartedReplay -> mc.disconnect() transitions MC to TitleScreen, which fires
+    // GuiHandler.ensureReplayStopped -> endReplay -> zipFile.close(), poisoning every stream
+    // we open afterwards (see log22). The 3.1.6 behavior of "true here" only appeared to work
+    // because runSync deadlocked for 30s before timing out (log17). 3.2.0 had this right.
+    protected boolean startFromBeginning = false;
 
     /**
      * Whether to terminate the replay. This only has an effect on the async mode and is {@code true} during sync mode.
@@ -1254,7 +1256,11 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
                     }
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                // Suppress noise when the replay is being torn down (e.g. user navigated away
+                // mid-load and endReplay closed the zipFile under us — log22).
+                if (!terminate) {
+                    e.printStackTrace();
+                }
             }
         }
     };
