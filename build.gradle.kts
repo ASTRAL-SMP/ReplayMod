@@ -118,6 +118,10 @@ dependencies {
         if (mcVersion >= 11700) {
             fabricApiModules.remove("networking-v0")
         }
+        if (mcVersion >= 11900) {
+            // For /replaymod slash commands (timekeyframe / positionkeyframe / quickmode)
+            fabricApiModules.add("command-api-v2")
+        }
         if (mcVersion >= 12109) {
             fabricApiModules.add("resource-loader-v1")
         }
