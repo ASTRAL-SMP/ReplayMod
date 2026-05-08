@@ -115,6 +115,27 @@ public class QuickReplaySender extends ChannelHandlerAdapter implements ReplaySe
             errorLogged = true;
             LOGGER.error("Quick Mode replay state is incompatible with this replay or modpack. Disabling Quick Mode.", throwable);
         }
+        // Without this, disabling Quick Mode leaves the channel pipeline pointing at a now-dead
+        // quickReplaySender while fullReplaySender is still in sync mode (left over from
+        // QuickMode.enableByDefault's setSyncModeAndWait). Nobody dispatches packets and the
+        // replay sits on a black screen. Schedule a switch back to Full Mode + async on the
+        // next main-thread tick (we may be inside the channel exceptionCaught path right now,
+        // so we don't reenter the pipeline synchronously).
+        ReplayHandler currentHandler = mod.getReplayHandler();
+        if (currentHandler != null && currentHandler.isQuickMode()) {
+            mod.getCore().runLater(() -> {
+                ReplayHandler handler = mod.getReplayHandler();
+                if (handler == null || !handler.isQuickMode()) {
+                    return;
+                }
+                try {
+                    handler.setQuickMode(false);
+                    handler.getReplaySender().setAsyncMode(true);
+                } catch (Throwable t) {
+                    LOGGER.error("Failed to fall back to Full Mode after Quick Mode error.", t);
+                }
+            });
+        }
     }
 
     public void setChannel(Channel channel) {
