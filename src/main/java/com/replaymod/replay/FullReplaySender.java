@@ -1271,10 +1271,6 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
 
     private void abortReplayBeforeWorldLoaded(String reason) {
         LOGGER.error("{} The replay file is likely incomplete or corrupt.", reason);
-        // Diagnostic: dump asyncSender / prefetch path that triggered the abort. Pairs with
-        // the ZipReplayFile.close stack trace to identify the order of close/abort events
-        // when investigating "Stream closed" mid-load (log21).
-        LOGGER.warn("abortReplayBeforeWorldLoaded called from", new Throwable("abort stacktrace"));
         terminateReplay();
         ReplayMod.instance.runLater(() -> {
             try {

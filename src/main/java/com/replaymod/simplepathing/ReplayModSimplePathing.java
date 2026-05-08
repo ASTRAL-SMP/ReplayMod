@@ -28,6 +28,12 @@ import net.minecraft.util.crash.CrashException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+//#if MC>=11900
+//$$ import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+//$$ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+//$$ import net.minecraft.text.Text;
+//#endif
+
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Map;
@@ -79,7 +85,54 @@ public class ReplayModSimplePathing extends EventRegistrations implements Module
     @Override
     public void initClient() {
         register();
+        //#if MC>=11900
+        //$$ registerCommands();
+        //#endif
     }
+
+    //#if MC>=11900
+    //$$ private void registerCommands() {
+    //$$     ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+    //$$         dispatcher.register(
+    //$$             ClientCommandManager.literal("replaymod")
+    //$$                 .then(ClientCommandManager.literal("timekeyframe").executes(ctx -> {
+    //$$                     if (guiPathing == null) {
+    //$$                         ctx.getSource().sendError(Text.literal("Open a replay first."));
+    //$$                         return 0;
+    //$$                     }
+    //$$                     guiPathing.toggleKeyframe(SPPath.TIME, false);
+    //$$                     ctx.getSource().sendFeedback(Text.literal("Toggled time keyframe at cursor."));
+    //$$                     return 1;
+    //$$                 }))
+    //$$                 .then(ClientCommandManager.literal("positionkeyframe").executes(ctx -> {
+    //$$                     if (guiPathing == null) {
+    //$$                         ctx.getSource().sendError(Text.literal("Open a replay first."));
+    //$$                         return 0;
+    //$$                     }
+    //$$                     guiPathing.toggleKeyframe(SPPath.POSITION, false);
+    //$$                     ctx.getSource().sendFeedback(Text.literal("Toggled position keyframe at cursor."));
+    //$$                     return 1;
+    //$$                 }))
+    //$$                 .then(ClientCommandManager.literal("quickmode").executes(ctx -> {
+    //$$                     ReplayHandler replayHandler = ReplayModReplay.instance.getReplayHandler();
+    //$$                     if (replayHandler == null) {
+    //$$                         ctx.getSource().sendError(Text.literal("Open a replay first."));
+    //$$                         return 0;
+    //$$                     }
+    //$$                     replayHandler.getReplaySender().setSyncModeAndWait();
+    //$$                     core.runLaterWithoutLock(() -> {
+    //$$                         replayHandler.ensureQuickModeInitialized(() -> {
+    //$$                             boolean enabled = !replayHandler.isQuickMode();
+    //$$                             replayHandler.setQuickMode(enabled);
+    //$$                             replayHandler.getReplaySender().setAsyncMode(true);
+    //$$                         });
+    //$$                     });
+    //$$                     return 1;
+    //$$                 }))
+    //$$         );
+    //$$     });
+    //$$ }
+    //#endif
 
     @Override
     public void registerKeyBindings(KeyBindingRegistry registry) {
