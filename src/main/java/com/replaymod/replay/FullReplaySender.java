@@ -290,7 +290,11 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
     /**
      * Whether we need to restart the current replay. E.g. when jumping backwards in time
      */
-    protected boolean startFromBeginning = false;
+    // Initial value must be true: the asyncSender's first iteration relies on this to take the
+    // restart path (close replayIn, runSync(restartedReplay)) before reading any packets.
+    // Setting it to false in 3.1.7 broke replay loading on some files (cache reanalysis would
+    // race with the leaked initial replayIn and ZipFile state). Reverting to 3.1.6 behavior.
+    protected boolean startFromBeginning = true;
 
     /**
      * Whether to terminate the replay. This only has an effect on the async mode and is {@code true} during sync mode.
