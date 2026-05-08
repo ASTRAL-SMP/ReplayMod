@@ -126,11 +126,14 @@ jobs:
         if: steps.release.outputs.tag != ''
         run: |
           rm -rf versions/1.19.4/build/libs versions/1.21.4/build/libs
-          # --parallel: run 1.19.4 / 1.21.4 sub-builds concurrently
-          # --build-cache: reuse compilation outputs from cached Gradle dirs
-          # --configuration-cache: skip configuration on cached graphs
+          # --parallel:   run 1.19.4 / 1.21.4 sub-builds concurrently
+          # --build-cache: reuse compiled task outputs from cached Gradle dirs
+          # --configuration-cache is NOT used: the project's ShadowJar +
+          # configureRelocation tasks reference Gradle script objects which
+          # are not serializable by the configuration cache, so enabling it
+          # turns into a hard build failure at the end.
           nix develop --command bash -lc './gradlew \
-            --no-daemon --parallel --build-cache --configuration-cache \
+            --no-daemon --parallel --build-cache \
             $REPLAYMOD_GRADLE_TOOLCHAINS \
             :1.19.4:bundleJar :1.21.4:bundleJar'
 
