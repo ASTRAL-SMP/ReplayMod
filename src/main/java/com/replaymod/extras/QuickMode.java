@@ -41,28 +41,12 @@ public class QuickMode extends EventRegistrations implements Extra {
     {
         on(ReplayOpenedCallback.EVENT, replayHandler -> {
             updateIndicator(replayHandler.getOverlay(), replayHandler.isQuickMode());
-            enableByDefault(replayHandler);
         });
     }
-
-    private void enableByDefault(ReplayHandler replayHandler) {
-        module.getCore().runLaterWithoutLock(() -> {
-            if (module.getReplayHandler() != replayHandler
-                    || replayHandler.isQuickMode()
-                    || !replayHandler.getReplaySender().isAsyncMode()) {
-                return;
-            }
-            replayHandler.getReplaySender().setSyncModeAndWait();
-            replayHandler.ensureQuickModeInitialized(() -> {
-                if (module.getReplayHandler() != replayHandler || replayHandler.isQuickMode()) {
-                    return;
-                }
-                updateIndicator(replayHandler.getOverlay(), true);
-                replayHandler.setQuickMode(true);
-                replayHandler.getReplaySender().setAsyncMode(true);
-            });
-        });
-    }
+    // QuickMode auto-init on replay open was removed: it serialized behind the FullReplaySender
+    // start-up via setSyncModeAndWait, took tens of seconds on cache-miss replays, and produced
+    // log21/log22-style noise when the user navigated away mid-init. Quick Mode is now strictly
+    // opt-in via the Q hotkey (see registerKeyBinding above).
 
     private void updateIndicator(GuiReplayOverlay overlay, boolean enabled) {
         if (enabled) {
