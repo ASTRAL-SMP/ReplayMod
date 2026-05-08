@@ -45,6 +45,7 @@ public class QuickReplaySender extends ChannelHandlerAdapter implements ReplaySe
     private Channel channel;
     private boolean disabledDueToError;
     private boolean errorLogged;
+    private boolean eventHandlerRegistered;
 
     private int currentTimeStamp;
     private double replaySpeed = 1;
@@ -91,10 +92,18 @@ public class QuickReplaySender extends ChannelHandlerAdapter implements ReplaySe
     }
 
     public void register() {
+        if (eventHandlerRegistered) {
+            return;
+        }
+        eventHandlerRegistered = true;
         eventHandler.register();
     }
 
     public void unregister() {
+        if (!eventHandlerRegistered) {
+            return;
+        }
+        eventHandlerRegistered = false;
         eventHandler.unregister();
     }
 
