@@ -70,6 +70,10 @@ public class ReplayFilesService {
         return new ManagedReplayFile(replayFile, onClose);
     }
 
+    public boolean isLocked(Path path) {
+        return lockedPaths.contains(path.toAbsolutePath().normalize());
+    }
+
     public void initialScan(ReplayMod core) {
         // Move anything which is still in the recording folder into the regular replay folder
         // so it can be opened and/or recovered

@@ -227,6 +227,7 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
     );
 
     private static int TP_DISTANCE_LIMIT = 128;
+    private static final long INITIAL_WORLD_LOAD_TIMEOUT_MS = 60_000;
 
     /**
      * The replay handler responsible for the current replay.
@@ -1117,6 +1118,7 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
             try {
                 REPLAY_LOOP:
                 while (!terminate) {
+                    long worldLoadStart = System.currentTimeMillis();
                     synchronized (FullReplaySender.this) {
                         if (replayIn == null) {
                             replayIn = replayFile.getPacketData(getPacketTypeRegistry(State.LOGIN));
@@ -1151,6 +1153,12 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
 
                                 int nextTimeStamp = nextPacket.timestamp;
                                 schedulePacketDataPrefetch();
+
+                                if (!hasWorldLoaded && System.currentTimeMillis() - worldLoadStart > INITIAL_WORLD_LOAD_TIMEOUT_MS) {
+                                    abortReplayBeforeWorldLoaded("Replay did not load a world within "
+                                            + (INITIAL_WORLD_LOAD_TIMEOUT_MS / 1000) + " seconds.");
+                                    break REPLAY_LOOP;
+                                }
 
                                 // If we aren't jumping and the world has already been loaded (no dirt-screens) then wait
                                 // the required amount to get proper packet timing
@@ -1240,7 +1248,11 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
     };
 
     private void abortReplayBeforeWorldLoaded() {
-        LOGGER.error("Replay ended before a world could be loaded. The replay file is likely incomplete or corrupt.");
+        abortReplayBeforeWorldLoaded("Replay ended before a world could be loaded.");
+    }
+
+    private void abortReplayBeforeWorldLoaded(String reason) {
+        LOGGER.error("{} The replay file is likely incomplete or corrupt.", reason);
         terminateReplay();
         ReplayMod.instance.runLater(() -> {
             try {

@@ -377,6 +377,9 @@ public class GuiReplayViewer extends GuiScreen {
                 Arrays.sort(files, Comparator.<File>comparingLong(f -> lastModified.computeIfAbsent(f, File::lastModified)).reversed());
                 for (final File file : files) {
                     if (Thread.interrupted()) break;
+                    if (ReplayMod.instance.files.isLocked(file.toPath())) {
+                        continue;
+                    }
                     try (ReplayFile replayFile = ReplayMod.instance.files.open(file.toPath())) {
                         final Image thumb = Optional.ofNullable(replayFile.getThumbBytes().orNull()).flatMap(stream -> {
                             try (InputStream in = stream) {
