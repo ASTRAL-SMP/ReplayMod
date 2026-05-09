@@ -26,9 +26,7 @@ done
 
 : "${FFNV_CODEC_HEADERS:=$DEFAULT_FFNV_CODEC_HEADERS}"
 : "${JAVA_INCLUDE:=${JAVA_HOME:-}/include}"
-if [[ -z "${CXX:-}" || "$(basename "$CXX")" != *w64-mingw32* ]]; then
-  CXX=x86_64-w64-mingw32-g++
-fi
+: "${ZIG:=zig}"
 
 if [[ -z "$FFNV_CODEC_HEADERS" || ! -f "$FFNV_CODEC_HEADERS/ffnvcodec/nvEncodeAPI.h" ]]; then
   echo "FFNV_CODEC_HEADERS must point to nv-codec-headers/include" >&2
@@ -40,20 +38,25 @@ if [[ -z "$JAVA_INCLUDE" || ! -f "$JAVA_INCLUDE/jni.h" ]]; then
   exit 1
 fi
 
-EXTRA_LDFLAGS=()
-if [[ -n "${MCFGTHREAD:-}" && -d "$MCFGTHREAD/lib" ]]; then
-  EXTRA_LDFLAGS+=("-L$MCFGTHREAD/lib")
+if ! command -v "$ZIG" >/dev/null 2>&1; then
+  echo "zig is required (set ZIG=path/to/zig). On Nix, run inside \`nix develop\`." >&2
+  exit 1
 fi
 
-"$CXX" \
+# Why zig instead of mingw-w64 GCC: nixpkgs builds its mingw-w64 GCC with
+# `--enable-threads=mcf`, leaving libstdc++ — and therefore every cross-built
+# C++ DLL — with a runtime dependency on `mcfgthread-12.dll`. That DLL is not
+# included in any Windows release; on the user's PC LoadLibrary fails with
+# "Can't find dependent libraries". `zig c++` ships its own self-contained
+# libc++ and links against UCRT (`api-ms-win-crt-*`), which is included in
+# Windows 10/11 by default. The output DLL therefore has no extra runtime
+# dependency and loads on stock Windows.
+"$ZIG" c++ -target x86_64-windows-gnu \
   -std=c++17 -O2 -DNOMINMAX -DWIN32_LEAN_AND_MEAN -shared \
   -I"$FFNV_CODEC_HEADERS" \
   -I"$JAVA_INCLUDE" \
   -I"$JAVA_INCLUDE/linux" \
   "$ROOT/replaymod_native_encoder.cpp" \
-  -o "$OUT/replaymod_native_encoder.dll" \
-  "${EXTRA_LDFLAGS[@]}" \
-  -static -static-libgcc -static-libstdc++ \
-  -Wl,--out-implib,"$OUT/libreplaymod_native_encoder.a"
+  -o "$OUT/replaymod_native_encoder.dll"
 
 ls -lh "$OUT/replaymod_native_encoder.dll"

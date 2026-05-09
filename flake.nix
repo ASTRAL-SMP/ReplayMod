@@ -18,6 +18,18 @@
             jdk17
             jdk21
             unstablePkgs.jdk25
+            # Native encoder is built with `zig c++` (windows-gnu target +
+            # bundled libc++ + UCRT) instead of nixpkgs' mingw-w64 GCC. The
+            # mingw-w64 GCC ships configured with `--enable-threads=mcf`,
+            # which leaves the resulting DLL with a runtime dependency on
+            # `mcfgthread-12.dll` — a DLL that does NOT ship with Windows,
+            # so the cross-built encoder fails to load on user boxes with
+            # "Can't find dependent libraries". Zig's bundled toolchain has
+            # no such dependency; the produced DLL only needs UCRT
+            # (api-ms-win-crt-*, present on Win10/11) and KERNEL32.
+            unstablePkgs.zig
+            # mingw-w64 toolchain kept around for objdump / nm / inspection;
+            # not used as the active compiler.
             pkgsCross.mingwW64.stdenv.cc
             nv-codec-headers
             gradle
