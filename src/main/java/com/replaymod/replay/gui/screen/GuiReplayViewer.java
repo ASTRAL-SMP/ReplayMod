@@ -134,6 +134,55 @@ public class GuiReplayViewer extends GuiScreen {
         }
     }).setSize(150, 20).setI18nLabel("replaymod.gui.viewer.replayfolder");
 
+    /**
+     * Opens a native OS file picker (via LWJGL's bundled tinyfiledialogs) and starts the
+     * selected .mcpr replay using the same code path as files inside the recordings
+     * folder. Lets users keep replays on a different drive / cloud-synced folder /
+     * archive location without having to copy them in first.
+     */
+    public final GuiButton openExternalButton = new GuiButton().onClick(new Runnable() {
+        @Override
+        public void run() {
+            String picked;
+            try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+                org.lwjgl.PointerBuffer filters = stack.mallocPointer(1);
+                filters.put(stack.UTF8("*.mcpr"));
+                filters.flip();
+                File start;
+                try {
+                    start = mod.getCore().folders.getReplayFolder().toFile();
+                } catch (IOException e) {
+                    start = null;
+                }
+                String startPath = start != null ? start.getAbsolutePath() + File.separator : "";
+                picked = org.lwjgl.util.tinyfd.TinyFileDialogs.tinyfd_openFileDialog(
+                        "Open Replay (.mcpr)",
+                        startPath,
+                        filters,
+                        "Minecraft Replay (*.mcpr)",
+                        false);
+            } catch (Throwable t) {
+                LOGGER.error("Native file picker failed:", t);
+                return;
+            }
+            if (picked == null || picked.isEmpty()) {
+                return;
+            }
+            File file = new File(picked);
+            if (!file.isFile()) {
+                LOGGER.warn("Picked path is not a regular file: {}", file);
+                return;
+            }
+            LOGGER.info("Opening external replay: {}", file);
+            try {
+                mod.startReplay(file);
+            } catch (IOException e) {
+                LOGGER.error("Failed to open external replay {}:", file, e);
+                Utils.error(LOGGER, GuiReplayViewer.this, CrashReport.create(e, "Opening replay"), () -> {});
+            }
+        }
+    }).setSize(150, 20).setI18nLabel("replaymod.gui.viewer.openexternal");
+
     public final GuiButton renameButton = new GuiButton().onClick(new Runnable() {
         @Override
         public void run() {
@@ -218,7 +267,7 @@ public class GuiReplayViewer extends GuiScreen {
     public final GuiPanel editorButton = new GuiPanel();
 
     public final GuiPanel upperButtonPanel = new GuiPanel().setLayout(new HorizontalLayout().setSpacing(5))
-            .addElements(null, loadButton);
+            .addElements(null, loadButton, openExternalButton);
     public final GuiPanel lowerButtonPanel = new GuiPanel().setLayout(new HorizontalLayout().setSpacing(5))
             .addElements(null, renameButton, deleteButton, editorButton, cancelButton);
     public final GuiPanel buttonPanel = new GuiPanel(this).setLayout(new VerticalLayout().setSpacing(5))

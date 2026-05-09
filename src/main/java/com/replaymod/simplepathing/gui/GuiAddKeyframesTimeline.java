@@ -45,6 +45,7 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
     private final Mode mode;
     private final SPTimeline timeline;
     private final GuiPathing guiPathing;
+    private final ReplayHandler handler;
     private final int replayDurationMs;
     private final int currentReplayMs;
 
@@ -116,6 +117,7 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
         this.mode = mode;
         this.timeline = timeline;
         this.guiPathing = guiPathing;
+        this.handler = handler;
         this.replayDurationMs = Math.max(1000, handler.getReplayDuration());
         this.currentReplayMs = Math.max(0, Math.min(currentReplayMs, replayDurationMs));
 
@@ -145,6 +147,17 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
         markerTimeline.setLength(replayDurationMs);
         markerTimeline.setCursorPosition(this.currentReplayMs);
         markerTimeline.setMarkers(true);
+
+        // Pre-seed a pending marker at the playhead so pressing I/O → Apply (with no
+        // extra clicks) reproduces the old-style "toggle keyframe at current playhead"
+        // behaviour. This is what users actually mean when they hit the hotkey at a
+        // moment they want to mark; the click-anywhere UI is a superset, not a
+        // replacement. Right-click the cursor marker to drop it if a different intent.
+        if (mode == Mode.TIME && !timeline.isTimeKeyframe(this.currentReplayMs)) {
+            pendingMarkers.add((long) this.currentReplayMs);
+        } else if (mode == Mode.POSITION && !timeline.isPositionKeyframe(this.currentReplayMs)) {
+            pendingMarkers.add((long) this.currentReplayMs);
+        }
 
         applyButton.onClick(this::applyMarkers);
         clearButton.onClick(() -> {
@@ -323,6 +336,29 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
         }
         LOGGER.info("GuiAddKeyframesTimeline ({}): added {}, removed {}, skipped {} existing",
                 mode, added, removed, skippedExisting);
+
+        // The user's mental model is "I am marking THIS moment for a keyframe"; if the
+        // playhead doesn't actually advance to the keyframe's timestamp afterwards, the
+        // world they're looking at doesn't match where they just placed the keyframe and
+        // the placement looks "wrong" even though the data is correct. Jumping here also
+        // forces the replay sender to load the chunks/state at that timestamp — the
+        // "force-load nearby" the user asked for. We aim at the largest marker so the
+        // sender ends up no earlier than the rightmost just-placed keyframe.
+        if ((added > 0 || removed > 0) && handler != null) {
+            long target;
+            if (!pendingMarkers.isEmpty()) {
+                target = pendingMarkers.last();
+            } else {
+                target = pendingDeletions.last();
+            }
+            int clamped = (int) Math.min(Integer.MAX_VALUE, Math.max(0, target));
+            try {
+                handler.getReplaySender().jumpToTime(clamped);
+            } catch (Throwable ex) {
+                LOGGER.warn("GuiAddKeyframesTimeline: jump to {} after apply failed: {}",
+                        clamped, ex.toString());
+            }
+        }
         close();
     }
 
