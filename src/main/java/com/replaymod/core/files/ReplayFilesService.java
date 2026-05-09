@@ -67,7 +67,7 @@ public class ReplayFilesService {
             onClose.run();
             throw e;
         }
-        return new ManagedReplayFile(replayFile, onClose);
+        return new ManagedReplayFile(replayFile, onClose, realOutput);
     }
 
     public boolean isLocked(Path path) {
