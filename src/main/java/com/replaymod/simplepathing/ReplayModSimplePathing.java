@@ -156,21 +156,21 @@ public class ReplayModSimplePathing extends EventRegistrations implements Module
                 guiPathing != null && guiPathing.deleteButtonPressed());
         keyPositionKeyframe = core.getKeyBindingRegistry().registerKeyBinding("replaymod.input.positionkeyframe", Keyboard.KEY_I, () -> {
             if (guiPathing != null) {
-                com.replaymod.simplepathing.gui.GuiAddKeyframes.openPosition(guiPathing,
-                        guiPathing.timeline.getCursorPosition());
+                int replayMs = com.replaymod.replay.ReplayModReplay.instance.getReplayHandler()
+                        .getReplaySender().currentTimeStamp();
+                com.replaymod.simplepathing.gui.GuiAddKeyframesTimeline.openPosition(guiPathing, replayMs);
             }
         }, true);
         // The "no GUI" variant keeps the original direct-toggle behaviour for users who bound
-        // it explicitly — the bulk-add popup is only for the default I / O bindings.
+        // it explicitly — the click-on-timeline popup is only for the default I / O bindings.
         core.getKeyBindingRegistry().registerKeyBinding("replaymod.input.positiononlykeyframe", 0, () -> {
             if (guiPathing != null) guiPathing.toggleKeyframe(SPPath.POSITION, true);
         }, true);
         keyTimeKeyframe = core.getKeyBindingRegistry().registerKeyBinding("replaymod.input.timekeyframe", Keyboard.KEY_O, () -> {
             if (guiPathing != null) {
-                int cursor = guiPathing.timeline.getCursorPosition();
                 int replayMs = com.replaymod.replay.ReplayModReplay.instance.getReplayHandler()
                         .getReplaySender().currentTimeStamp();
-                com.replaymod.simplepathing.gui.GuiAddKeyframes.openTime(guiPathing, cursor, replayMs);
+                com.replaymod.simplepathing.gui.GuiAddKeyframesTimeline.openTime(guiPathing, replayMs);
             }
         }, true);
         core.getKeyBindingRegistry().registerKeyBinding("replaymod.input.bothkeyframes", 0, () -> {
