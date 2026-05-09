@@ -5,6 +5,7 @@ import com.replaymod.core.Module;
 import com.replaymod.core.ReplayMod;
 import com.replaymod.core.SettingsRegistry;
 import com.replaymod.core.events.SettingsChangedCallback;
+import com.replaymod.core.files.ManagedReplayFile;
 import de.johni0702.minecraft.gui.utils.EventRegistrations;
 import com.replaymod.core.versions.MCVer.Keyboard;
 import com.replaymod.replay.ReplayHandler;
@@ -155,21 +156,21 @@ public class ReplayModSimplePathing extends EventRegistrations implements Module
                 guiPathing != null && guiPathing.deleteButtonPressed());
         keyPositionKeyframe = core.getKeyBindingRegistry().registerKeyBinding("replaymod.input.positionkeyframe", Keyboard.KEY_I, () -> {
             if (guiPathing != null) {
-                com.replaymod.simplepathing.gui.GuiAddKeyframes.openPosition(guiPathing,
-                        guiPathing.timeline.getCursorPosition());
+                int replayMs = com.replaymod.replay.ReplayModReplay.instance.getReplayHandler()
+                        .getReplaySender().currentTimeStamp();
+                com.replaymod.simplepathing.gui.GuiAddKeyframesTimeline.openPosition(guiPathing, replayMs);
             }
         }, true);
         // The "no GUI" variant keeps the original direct-toggle behaviour for users who bound
-        // it explicitly — the bulk-add popup is only for the default I / O bindings.
+        // it explicitly — the click-on-timeline popup is only for the default I / O bindings.
         core.getKeyBindingRegistry().registerKeyBinding("replaymod.input.positiononlykeyframe", 0, () -> {
             if (guiPathing != null) guiPathing.toggleKeyframe(SPPath.POSITION, true);
         }, true);
         keyTimeKeyframe = core.getKeyBindingRegistry().registerKeyBinding("replaymod.input.timekeyframe", Keyboard.KEY_O, () -> {
             if (guiPathing != null) {
-                int cursor = guiPathing.timeline.getCursorPosition();
                 int replayMs = com.replaymod.replay.ReplayModReplay.instance.getReplayHandler()
                         .getReplaySender().currentTimeStamp();
-                com.replaymod.simplepathing.gui.GuiAddKeyframes.openTime(guiPathing, cursor, replayMs);
+                com.replaymod.simplepathing.gui.GuiAddKeyframesTimeline.openTime(guiPathing, replayMs);
             }
         }, true);
         core.getKeyBindingRegistry().registerKeyBinding("replaymod.input.bothkeyframes", 0, () -> {
@@ -212,10 +213,27 @@ public class ReplayModSimplePathing extends EventRegistrations implements Module
         try {
             synchronized (replayFile) {
                 Timeline timeline = replayFile.getTimelines(new SPTimeline()).get("");
-                if (timeline != null) {
+                if (timeline != null && TimelineBackup.hasKeyframes(timeline)) {
                     setCurrentTimeline(new SPTimeline(timeline), false);
                 } else {
-                    setCurrentTimeline(new SPTimeline(), false);
+                    SPTimeline restored = tryRestoreFromBackup(replayFile);
+                    if (restored != null) {
+                        // The replay's stored timeline came back empty but our sidecar still has the
+                        // last auto-saved keyframes — happens when a previous session crashed and the
+                        // ".mcpr.tmp" recovery dialog was missed or declined. Promote those keyframes
+                        // back to the live timeline so the user doesn't lose hours of editing work.
+                        // Pass save=true so the next auto-save tick re-persists them into the zip
+                        // (otherwise an immediate clean exit would commit an empty timeline and our
+                        // post-close sidecar cleanup would then delete the only surviving copy).
+                        setCurrentTimeline(restored, true);
+                        LOGGER.info("Restored timeline from sidecar backup ({} keyframes).",
+                                restored.getTimeline().getPaths().stream()
+                                        .mapToInt(p -> p.getKeyframes().size()).sum());
+                    } else if (timeline != null) {
+                        setCurrentTimeline(new SPTimeline(timeline), false);
+                    } else {
+                        setCurrentTimeline(new SPTimeline(), false);
+                    }
                 }
             }
         } catch (IOException e) {
@@ -259,8 +277,15 @@ public class ReplayModSimplePathing extends EventRegistrations implements Module
         saveService = null;
     }
 
-    { on(ReplayClosedCallback.EVENT, replayHandler -> onReplayClosed()); }
-    private void onReplayClosed() {
+    { on(ReplayClosedCallback.EVENT, this::onReplayClosed); }
+    private void onReplayClosed(ReplayHandler replayHandler) {
+        // ReplayClosedCallback fires after replayFile.save() succeeded in endReplay, so the
+        // main zip is now authoritative — drop the sidecar to avoid a stale backup pinning the
+        // user to old keyframes if they later intentionally clear the timeline.
+        java.nio.file.Path replayPath = resolveReplayPath(replayHandler.getReplayFile());
+        if (replayPath != null) {
+            TimelineBackup.delete(replayPath);
+        }
         currentTimeline = null;
         guiPathing = null;
         selectedPath = null;
@@ -422,5 +447,48 @@ public class ReplayModSimplePathing extends EventRegistrations implements Module
             timelineMap.put("", timeline);
             replayFile.writeTimelines(pathingRegistry, timelineMap);
         }
+        writeSidecarBackup(replayFile, pathingRegistry, timeline);
+    }
+
+    private void writeSidecarBackup(ReplayFile replayFile, PathingRegistry pathingRegistry, Timeline timeline) {
+        java.nio.file.Path replayPath = resolveReplayPath(replayFile);
+        if (replayPath == null) return;
+        try {
+            String json = new TimelineSerialization(pathingRegistry, null)
+                    .serialize(Collections.singletonMap("", timeline));
+            TimelineBackup.write(replayPath, json);
+        } catch (IOException e) {
+            // Sidecar is best-effort — a failure here must never abort the primary save path.
+            LOGGER.warn("Writing timeline sidecar backup for {}: {}", replayPath, e.toString());
+        }
+    }
+
+    private SPTimeline tryRestoreFromBackup(ReplayFile replayFile) {
+        java.nio.file.Path replayPath = resolveReplayPath(replayFile);
+        if (replayPath == null) return null;
+        try {
+            String json = TimelineBackup.read(replayPath);
+            if (json == null) return null;
+            SPTimeline registry = new SPTimeline();
+            Timeline restored = TimelineBackup.tryDeserialize(registry, json);
+            if (!TimelineBackup.hasKeyframes(restored)) return null;
+            // SPTimeline's constructor assumes the standard TIME/POSITION path layout;
+            // a malformed backup could throw IndexOutOfBoundsException here. Restoration
+            // is best-effort, so any wrap failure means: fall through to a plain load.
+            return new SPTimeline(restored);
+        } catch (IOException e) {
+            LOGGER.warn("Reading timeline sidecar backup for {}: {}", replayPath, e.toString());
+            return null;
+        } catch (Throwable t) {
+            LOGGER.warn("Sidecar backup at {} appears corrupt, ignoring: {}", replayPath, t.toString());
+            return null;
+        }
+    }
+
+    private static java.nio.file.Path resolveReplayPath(ReplayFile replayFile) {
+        if (replayFile instanceof ManagedReplayFile) {
+            return ((ManagedReplayFile) replayFile).getReplayPath();
+        }
+        return null;
     }
 }

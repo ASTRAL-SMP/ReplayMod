@@ -18,7 +18,13 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
+import java.io.Reader;
+import java.io.StringReader;
+import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -102,6 +108,71 @@ public class RenderJob {
                         .create()
                         .toJson(renderQueue, writer);
             }
+        }
+    }
+
+    // === Sidecar backup ===
+    //
+    // Mirrors writeQueue/readQueue but onto a plain JSON file next to the .mcpr.
+    // Same rationale as TimelineBackup: the zip's staging area only survives a
+    // crash if the user accepts the recovery dialog on the next launch, and a
+    // user-queued render job (output path, codec, timeline binding...) is just
+    // as painful to reconstruct as the keyframes themselves.
+
+    private static final String BACKUP_SUFFIX = ".renderqueue.bak.json";
+
+    public static Path backupFor(Path replayPath) {
+        if (replayPath == null) return null;
+        Path parent = replayPath.getParent();
+        String name = replayPath.getFileName().toString() + BACKUP_SUFFIX;
+        return parent != null ? parent.resolve(name) : java.nio.file.Paths.get(name);
+    }
+
+    public static void writeBackup(Path replayPath, List<RenderJob> renderQueue) throws IOException {
+        Path backup = backupFor(replayPath);
+        if (backup == null) return;
+        StringWriter buffer = new StringWriter();
+        new GsonBuilder()
+                .registerTypeAdapter(Timeline.class, new TimelineTypeAdapter())
+                .create()
+                .toJson(renderQueue, buffer);
+        byte[] bytes = buffer.toString().getBytes(StandardCharsets.UTF_8);
+        Path tmp = backup.resolveSibling(backup.getFileName() + ".tmp");
+        Path parent = backup.getParent();
+        if (parent != null) Files.createDirectories(parent);
+        Files.write(tmp, bytes);
+        try {
+            Files.move(tmp, backup, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException atomicFailed) {
+            Files.move(tmp, backup, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /** Returns null if the backup is missing, empty, or unparseable — restoration is best-effort. */
+    public static List<RenderJob> readBackup(Path replayPath) {
+        Path backup = backupFor(replayPath);
+        if (backup == null || !Files.exists(backup)) return null;
+        try {
+            String json = new String(Files.readAllBytes(backup), StandardCharsets.UTF_8);
+            if (json.isEmpty()) return null;
+            try (Reader reader = new StringReader(json)) {
+                List<RenderJob> jobs = new GsonBuilder()
+                        .registerTypeAdapter(Timeline.class, new TimelineTypeAdapter())
+                        .create()
+                        .fromJson(reader, new TypeToken<List<RenderJob>>(){}.getType());
+                return jobs == null || jobs.isEmpty() ? null : jobs;
+            }
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    public static void deleteBackup(Path replayPath) {
+        Path backup = backupFor(replayPath);
+        if (backup == null) return;
+        try {
+            Files.deleteIfExists(backup);
+        } catch (IOException ignored) {
         }
     }
 
