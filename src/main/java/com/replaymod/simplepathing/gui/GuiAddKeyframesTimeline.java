@@ -44,6 +44,7 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
 
     private final Mode mode;
     private final SPTimeline timeline;
+    private final GuiPathing guiPathing;
     private final int replayDurationMs;
     private final int currentReplayMs;
 
@@ -89,7 +90,7 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
         if (handler == null) return null;
         SPTimeline timeline = guiPathing.getMod().getCurrentTimeline();
         if (timeline == null) return null;
-        return new GuiAddKeyframesTimeline(Mode.TIME, timeline, handler, defaultReplayMs);
+        return new GuiAddKeyframesTimeline(Mode.TIME, timeline, guiPathing, handler, defaultReplayMs);
     }
 
     public static GuiAddKeyframesTimeline openPosition(GuiPathing guiPathing, int defaultReplayMs) {
@@ -101,13 +102,14 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
         }
         SPTimeline timeline = guiPathing.getMod().getCurrentTimeline();
         if (timeline == null) return null;
-        return new GuiAddKeyframesTimeline(Mode.POSITION, timeline, handler, defaultReplayMs);
+        return new GuiAddKeyframesTimeline(Mode.POSITION, timeline, guiPathing, handler, defaultReplayMs);
     }
 
-    private GuiAddKeyframesTimeline(Mode mode, SPTimeline timeline, ReplayHandler handler, int currentReplayMs) {
+    private GuiAddKeyframesTimeline(Mode mode, SPTimeline timeline, GuiPathing guiPathing, ReplayHandler handler, int currentReplayMs) {
         super(handler.getOverlay());
         this.mode = mode;
         this.timeline = timeline;
+        this.guiPathing = guiPathing;
         this.replayDurationMs = Math.max(1000, handler.getReplayDuration());
         this.currentReplayMs = Math.max(0, Math.min(currentReplayMs, replayDurationMs));
 
@@ -198,6 +200,7 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
         }
         int added = 0;
         int skippedExisting = 0;
+        long maxMarker = pendingMarkers.last();
         for (long marker : pendingMarkers) {
             switch (mode) {
                 case TIME:
@@ -222,6 +225,18 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
                         added++;
                     }
                     break;
+            }
+        }
+        // The keyframe-editor timeline's visible length is set from
+        // Setting.TIMELINE_LENGTH (default 30 min). With the new "click anywhere on the
+        // replay" UI, users can place keyframes at replay times beyond that — the
+        // keyframe IS in the data model, but it's drawn off-screen, which looks like
+        // "the 2nd keyframe didn't get added." Extend the editor timeline to fit the
+        // furthest marker so every just-applied keyframe is visible.
+        if (added > 0 && guiPathing != null && guiPathing.timeline != null) {
+            long needed = maxMarker + 1000L; // small buffer so the keyframe isn't right at the edge
+            if (needed > guiPathing.timeline.getLength()) {
+                guiPathing.timeline.setLength((int) Math.min(Integer.MAX_VALUE, needed));
             }
         }
         LOGGER.info("GuiAddKeyframesTimeline ({}): added {}, skipped {} existing", mode, added, skippedExisting);
