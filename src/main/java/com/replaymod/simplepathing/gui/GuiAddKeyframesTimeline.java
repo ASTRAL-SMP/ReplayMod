@@ -54,12 +54,18 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
     private final int camSpectatedId;
 
     private final TreeSet<Long> pendingMarkers = new TreeSet<>();
+    /**
+     * Existing keyframes (of this popup's mode) the user has scheduled for deletion.
+     * Right-click on an existing keyframe toggles inclusion; Apply removes them as part
+     * of the same commit as the additions.
+     */
+    private final TreeSet<Long> pendingDeletions = new TreeSet<>();
 
     // Popup panels render with a light background, so titles/labels need explicit black
     // text — leaving them on the default white made them invisible (matched popup chrome).
     private final GuiLabel title = new GuiLabel().setColor(Colors.BLACK);
     private final GuiLabel hint = new GuiLabel()
-            .setText("Left-click: add  ·  Right-click: remove")
+            .setText("Left-click: add  ·  Right-click: remove pending or mark existing for delete")
             .setColor(Colors.BLACK);
     private final GuiLabel counter = new GuiLabel().setColor(Colors.BLACK);
 
@@ -143,6 +149,7 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
         applyButton.onClick(this::applyMarkers);
         clearButton.onClick(() -> {
             pendingMarkers.clear();
+            pendingDeletions.clear();
             updateCounter();
         });
         cancelButton.onClick(this::close);
@@ -152,7 +159,40 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
     }
 
     private void updateCounter() {
-        counter.setText("Pending: " + pendingMarkers.size());
+        if (pendingDeletions.isEmpty()) {
+            counter.setText("Pending: " + pendingMarkers.size());
+        } else {
+            counter.setText("Pending: " + pendingMarkers.size() + " add, " + pendingDeletions.size() + " delete");
+        }
+    }
+
+    /**
+     * Returns the timestamps of every existing keyframe of this popup's mode (time or
+     * position). Each value is the keyframe's path-video time, which is also what we
+     * pass to {@link SPTimeline#removeTimeKeyframe}/{@link SPTimeline#removePositionKeyframe}.
+     */
+    private java.util.List<Long> existingKeyframeTimes() {
+        com.replaymod.replaystudio.pathing.path.Path path = mode == Mode.TIME
+                ? timeline.getTimePath()
+                : timeline.getPositionPath();
+        java.util.List<Long> out = new java.util.ArrayList<>();
+        for (com.replaymod.replaystudio.pathing.path.Keyframe kf : path.getKeyframes()) {
+            out.add(kf.getTime());
+        }
+        return out;
+    }
+
+    private Long nearestExistingKeyframe(long timeMs, long toleranceMs) {
+        Long best = null;
+        long bestDist = Long.MAX_VALUE;
+        for (long t : existingKeyframeTimes()) {
+            long d = Math.abs(t - timeMs);
+            if (d <= toleranceMs && d < bestDist) {
+                best = t;
+                bestDist = d;
+            }
+        }
+        return best;
     }
 
     // Snap tolerance for the right-click "remove nearest" gesture and for left-click
@@ -169,10 +209,26 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
         updateCounter();
     }
 
+    /**
+     * Right-click handler. Order: pending marker first, then existing keyframe.
+     * - Pending green marker within snap → just drop it (cancels a stray add).
+     * - Existing keyframe within snap     → toggle delete-mark (apply will remove it).
+     * Lets the user fix mistakes and prune existing keyframes through the same UI,
+     * which is the whole point of routing all keyframe ops through this popup.
+     */
     private void removeNearestMarker(long timeMs) {
         Long nearest = nearestMarkerWithin(timeMs, SNAP_TOLERANCE_MS);
         if (nearest != null) {
             pendingMarkers.remove(nearest);
+            updateCounter();
+            return;
+        }
+        Long existing = nearestExistingKeyframe(timeMs, SNAP_TOLERANCE_MS);
+        if (existing != null) {
+            if (!pendingDeletions.add(existing)) {
+                // Already marked → toggle off so users can back out of the deletion.
+                pendingDeletions.remove(existing);
+            }
             updateCounter();
         }
     }
@@ -194,13 +250,39 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
     }
 
     private void applyMarkers() {
-        if (pendingMarkers.isEmpty()) {
+        if (pendingMarkers.isEmpty() && pendingDeletions.isEmpty()) {
             close();
             return;
         }
+        // Process deletions FIRST so a "delete + re-add at the same time" round-trip works
+        // (otherwise the add hits the still-existing keyframe and SPTimeline.addTimeKeyframe
+        // throws "Keyframe already exists"). Iterate descending so removing a keyframe
+        // doesn't shift indices of remaining ones (paths are time-keyed, but stable).
+        int removed = 0;
+        for (long t : pendingDeletions.descendingSet()) {
+            try {
+                if (mode == Mode.TIME) {
+                    if (timeline.isTimeKeyframe(t)) {
+                        timeline.removeTimeKeyframe(t);
+                        removed++;
+                    }
+                } else {
+                    if (timeline.isPositionKeyframe(t)) {
+                        timeline.removePositionKeyframe(t);
+                        removed++;
+                    }
+                }
+            } catch (Throwable ex) {
+                // Don't abort the whole apply if one removal fails — the user explicitly
+                // asked for these operations and partial completion is better than nothing.
+                LOGGER.warn("GuiAddKeyframesTimeline ({}): failed to remove keyframe at {}: {}",
+                        mode, t, ex.toString());
+            }
+        }
+
         int added = 0;
         int skippedExisting = 0;
-        long maxMarker = pendingMarkers.last();
+        long maxMarker = pendingMarkers.isEmpty() ? 0L : pendingMarkers.last();
         for (long marker : pendingMarkers) {
             switch (mode) {
                 case TIME:
@@ -239,7 +321,8 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
                 guiPathing.timeline.setLength((int) Math.min(Integer.MAX_VALUE, needed));
             }
         }
-        LOGGER.info("GuiAddKeyframesTimeline ({}): added {}, skipped {} existing", mode, added, skippedExisting);
+        LOGGER.info("GuiAddKeyframesTimeline ({}): added {}, removed {}, skipped {} existing",
+                mode, added, removed, skippedExisting);
         close();
     }
 
@@ -289,14 +372,34 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
             int startTime = getOffset();
             if (visibleLength <= 0 || bodyWidth <= 0) return;
 
+            com.replaymod.replaystudio.pathing.path.Path ownPath = mode == Mode.TIME
+                    ? timeline.getTimePath()
+                    : timeline.getPositionPath();
+
             for (com.replaymod.replaystudio.pathing.path.Path path : timeline.getTimeline().getPaths()) {
+                boolean own = path == ownPath;
                 for (com.replaymod.replaystudio.pathing.path.Keyframe kf : path.getKeyframes()) {
                     long t = kf.getTime();
                     if (t < startTime || t > startTime + visibleLength) continue;
                     int x = BORDER_LEFT + (int) ((t - startTime) / (double) visibleLength * bodyWidth);
-                    // Two faint stripes so position vs time keyframes are distinguishable from the
-                    // pending green ticks; they don't need to scream for attention.
-                    renderer.drawRect(x, BORDER_TOP, 1, size.getHeight() - BORDER_TOP - BORDER_BOTTOM, 0x55FFFFFF);
+                    int top = BORDER_TOP;
+                    int bottom = size.getHeight() - BORDER_BOTTOM;
+                    if (own && pendingDeletions.contains(t)) {
+                        // Solid red stripe + cross-bars marking "this will be removed on Apply".
+                        // Right-clicking again toggles it back off.
+                        int del = 0xFFFF4444;
+                        renderer.drawRect(x - MARKER_HALF_WIDTH, top, MARKER_HALF_WIDTH * 2 + 1, 2, del);
+                        renderer.drawRect(x, top, 1, bottom - top, del);
+                        renderer.drawRect(x - MARKER_HALF_WIDTH, bottom - 2, MARKER_HALF_WIDTH * 2 + 1, 2, del);
+                    } else if (own) {
+                        // Existing keyframe of THIS popup's mode — draw brighter so the user sees
+                        // it as something they can right-click to delete.
+                        renderer.drawRect(x, top, 1, bottom - top, 0xCCFFFFFF);
+                    } else {
+                        // Other-mode keyframe (e.g. position keyframe on a TIME popup) — faint
+                        // hint only, not selectable.
+                        renderer.drawRect(x, top, 1, bottom - top, 0x55FFFFFF);
+                    }
                 }
             }
         }
