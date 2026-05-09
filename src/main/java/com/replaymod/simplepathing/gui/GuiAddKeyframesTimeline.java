@@ -337,13 +337,12 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
         LOGGER.info("GuiAddKeyframesTimeline ({}): added {}, removed {}, skipped {} existing",
                 mode, added, removed, skippedExisting);
 
-        // The user's mental model is "I am marking THIS moment for a keyframe"; if the
-        // playhead doesn't actually advance to the keyframe's timestamp afterwards, the
-        // world they're looking at doesn't match where they just placed the keyframe and
-        // the placement looks "wrong" even though the data is correct. Jumping here also
-        // forces the replay sender to load the chunks/state at that timestamp — the
-        // "force-load nearby" the user asked for. We aim at the largest marker so the
-        // sender ends up no earlier than the rightmost just-placed keyframe.
+        // Optionally advance the replay sender to the just-placed marker so the world
+        // state matches the placement. Skipped when the target is already near the
+        // playhead (the I/O-hotkey auto-marker case): firing a redundant jumpToTime()
+        // there spins up a full async fast-forward / chunk reload for no benefit and
+        // makes heavy concurrent edits feel risky. Only triggers when the user
+        // explicitly clicked a different time on the popup timeline.
         if ((added > 0 || removed > 0) && handler != null) {
             long target;
             if (!pendingMarkers.isEmpty()) {
@@ -351,16 +350,27 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
             } else {
                 target = pendingDeletions.last();
             }
-            int clamped = (int) Math.min(Integer.MAX_VALUE, Math.max(0, target));
-            try {
-                handler.getReplaySender().jumpToTime(clamped);
-            } catch (Throwable ex) {
-                LOGGER.warn("GuiAddKeyframesTimeline: jump to {} after apply failed: {}",
-                        clamped, ex.toString());
+            long delta = Math.abs(target - currentReplayMs);
+            if (delta > JUMP_THRESHOLD_MS) {
+                int clamped = (int) Math.min(Integer.MAX_VALUE, Math.max(0, target));
+                try {
+                    handler.getReplaySender().jumpToTime(clamped);
+                } catch (Throwable ex) {
+                    LOGGER.warn("GuiAddKeyframesTimeline: jump to {} after apply failed: {}",
+                            clamped, ex.toString());
+                }
             }
         }
         close();
     }
+
+    /**
+     * Skip the post-apply replay-sender jump when the furthest just-placed marker is
+     * within this many milliseconds of the playhead. Picked to be larger than typical
+     * frame jitter / lastTimeStamp lag at high replay speeds, so the I/O-hotkey
+     * default flow (auto-marker at currentReplayMs → Apply) reliably skips the jump.
+     */
+    private static final long JUMP_THRESHOLD_MS = 1500L;
 
     @Override
     public boolean handleKey(KeyInput keyInput) {
