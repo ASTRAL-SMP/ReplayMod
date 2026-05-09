@@ -54,10 +54,13 @@ public class GuiAddKeyframesTimeline extends AbstractGuiPopup<GuiAddKeyframesTim
 
     private final TreeSet<Long> pendingMarkers = new TreeSet<>();
 
-    private final GuiLabel title = new GuiLabel();
+    // Popup panels render with a light background, so titles/labels need explicit black
+    // text — leaving them on the default white made them invisible (matched popup chrome).
+    private final GuiLabel title = new GuiLabel().setColor(Colors.BLACK);
     private final GuiLabel hint = new GuiLabel()
-            .setText("Left-click: add  ·  Right-click: remove");
-    private final GuiLabel counter = new GuiLabel();
+            .setText("Left-click: add  ·  Right-click: remove")
+            .setColor(Colors.BLACK);
+    private final GuiLabel counter = new GuiLabel().setColor(Colors.BLACK);
 
     private final MarkerTimeline markerTimeline = new MarkerTimeline();
 
