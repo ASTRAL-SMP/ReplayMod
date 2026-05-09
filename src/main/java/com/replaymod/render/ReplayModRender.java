@@ -2,6 +2,7 @@ package com.replaymod.render;
 
 import com.replaymod.core.Module;
 import com.replaymod.core.ReplayMod;
+import com.replaymod.core.files.ManagedReplayFile;
 import com.replaymod.core.utils.Utils;
 import com.replaymod.render.utils.RenderJob;
 import com.replaymod.replay.ReplayHandler;
@@ -18,7 +19,7 @@ import org.apache.logging.log4j.Logger;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.Path;
+import Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -71,14 +72,40 @@ public class ReplayModRender extends EventRegistrations implements Module {
     private void onReplayOpened(ReplayHandler replayHandler) {
         replayFile = replayHandler.getReplayFile();
         try {
-            renderQueue.addAll(RenderJob.readQueue(replayFile));
+            List<RenderJob> stored = RenderJob.readQueue(replayFile);
+            if (!stored.isEmpty()) {
+                renderQueue.addAll(stored);
+            } else {
+                // Same recovery story as TimelineBackup: if the zip's renderQueue.json is missing
+                // because a previous session crashed before save() could commit, fall back to the
+                // sidecar so the user doesn't have to re-enter every output path / codec setting.
+                List<RenderJob> restored = RenderJob.readBackup(resolveReplayPath(replayFile));
+                if (restored != null) {
+                    renderQueue.addAll(restored);
+                    LOGGER.info("Restored render queue from sidecar backup ({} jobs).", restored.size());
+                    // Re-persist into the zip's staging area so a clean exit propagates the
+                    // restore back into renderQueue.json (otherwise the post-close cleanup would
+                    // delete the only surviving copy).
+                    try {
+                        RenderJob.writeQueue(replayFile, renderQueue);
+                    } catch (IOException writeFailed) {
+                        LOGGER.warn("Re-persisting restored render queue failed: {}", writeFailed.toString());
+                    }
+                }
+            }
         } catch (IOException e) {
             throw new CrashException(CrashReport.create(e, "Reading timeline"));
         }
     }
 
-    { on(ReplayClosedCallback.EVENT, replayHandler -> onReplayClosed()); }
-    private void onReplayClosed() {
+    { on(ReplayClosedCallback.EVENT, this::onReplayClosed); }
+    private void onReplayClosed(ReplayHandler replayHandler) {
+        // ReplayClosedCallback fires after replayFile.save() succeeded, so the zip is
+        // authoritative — drop the sidecar to avoid an intentional clear being undone.
+        Path replayPath = resolveReplayPath(replayHandler.getReplayFile());
+        if (replayPath != null) {
+            RenderJob.deleteBackup(replayPath);
+        }
         renderQueue.clear();
         replayFile = null;
     }
@@ -92,5 +119,21 @@ public class ReplayModRender extends EventRegistrations implements Module {
             CrashReport report = CrashReport.create(e, "Reading timeline");
             Utils.error(LOGGER, screen, report, () -> {});
         }
+        Path replayPath = resolveReplayPath(replayFile);
+        if (replayPath != null) {
+            try {
+                RenderJob.writeBackup(replayPath, renderQueue);
+            } catch (IOException e) {
+                // Sidecar is best-effort — never fail the user's action because of it.
+                LOGGER.warn("Writing render queue sidecar backup for {}: {}", replayPath, e.toString());
+            }
+        }
+    }
+
+    private static Path resolveReplayPath(ReplayFile replayFile) {
+        if (replayFile instanceof ManagedReplayFile) {
+            return ((ManagedReplayFile) replayFile).getReplayPath();
+        }
+        return null;
     }
 }
