@@ -446,6 +446,14 @@ public class FullReplaySender extends ChannelInboundHandlerAdapter implements Re
         }
     }
 
+    @Override
+    public int getReachedTimeStamp() {
+        // lastTimeStamp is updated by the asyncSender as it actually dispatches packets, so it
+        // never gets ahead of the world state — perfect for cursor display / keyframe capture
+        // at speeds (e.g. 64x) where currentTimeStamp()'s realtime extrapolation would lie.
+        return lastTimeStamp;
+    }
+
     /**
      * Terminate this replay sender.
      */
