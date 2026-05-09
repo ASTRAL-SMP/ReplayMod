@@ -14,6 +14,12 @@ public class StreamPipe extends Thread {
         super("StreamPipe from " + in + " to " + out);
         this.in = in;
         this.out = out;
+        // Pipes ffmpeg stdout/stderr into the export.log capture buffer. Purely a logging
+        // sidecar — if it gets stuck because ffmpeg never sends EOF (orphan child process,
+        // hung renderer, etc.), it must not block JVM shutdown. The render finishing path
+        // doesn't join() these threads, so a non-daemon pipe was historically a hidden way
+        // for "Minecraft won't close after a render" to require force-quit.
+        setDaemon(true);
     }
 
     @Override
