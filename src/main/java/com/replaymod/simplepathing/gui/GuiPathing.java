@@ -453,7 +453,10 @@ public class GuiPathing {
         }
         prevSpeed = speed;
 
-        int time = replayHandler.getReplaySender().currentTimeStamp();
+        // Use the reached timestamp so high-speed playback (e.g. 64x) doesn't drive the
+        // keyframe cursor ahead of the world: otherwise on pause it snaps back to lastTimeStamp
+        // and the user sees the timeline (and the yellow time keyframes) jerk backwards.
+        int time = replayHandler.getReplaySender().getReachedTimeStamp();
         if (prevTime != time && prevTime != -1 && !player.isActive()) {
             syncTimeButtonPressed();
         }
@@ -461,8 +464,9 @@ public class GuiPathing {
     }
 
     private Integer computeSyncTime(int cursor) {
-        // Current replay time
-        int time = replayHandler.getReplaySender().currentTimeStamp();
+        // Current replay time — use reached, not realtime-extrapolated, for the same reason as
+        // checkForAutoSync above.
+        int time = replayHandler.getReplaySender().getReachedTimeStamp();
         // Get the last time keyframe before the cursor
         Keyframe keyframe = mod.getCurrentTimeline().getTimePath().getKeyframes().stream()
                 .filter(it -> it.getTime() <= cursor).reduce((__, last) -> last)
@@ -758,7 +762,11 @@ public class GuiPathing {
                     mod.setSelected(null, 0);
                 } else {
                     LOGGER.debug("No time keyframe found -> adding new keyframe");
-                    timeline.addTimeKeyframe(time, replayHandler.getReplaySender().currentTimeStamp());
+                    // Use the actually-reached timestamp, not the realtime-extrapolated one — at
+                    // 64x replay speed currentTimeStamp() can be 100s of ms ahead of the world the
+                    // user is looking at, and persisting that into a keyframe makes the eventual
+                    // render warp to a position the user never saw.
+                    timeline.addTimeKeyframe(time, replayHandler.getReplaySender().getReachedTimeStamp());
                     mod.setSelected(path, time);
                 }
                 break;

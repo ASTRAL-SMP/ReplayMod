@@ -10,6 +10,20 @@ public interface ReplaySender {
     int currentTimeStamp();
 
     /**
+     * The replay timestamp the sender has actually dispatched packets up to.
+     *
+     * <p>Differs from {@link #currentTimeStamp()} only for {@link FullReplaySender} in async
+     * mode: that one extrapolates from real time × speed so animations stay smooth, but at
+     * high speeds (e.g. 64x) the sender can fall behind packet processing and the cursor
+     * ends up displayed ahead of where the world actually is. Use this method whenever the
+     * UI needs to show — or persist into a keyframe — the position the user is *actually*
+     * seeing, not where the sender wishes it were.
+     */
+    default int getReachedTimeStamp() {
+        return currentTimeStamp();
+    }
+
+    /**
      * Whether the replay is currently paused.
      * @return {@code true} if it is paused, {@code false} otherwise
      */

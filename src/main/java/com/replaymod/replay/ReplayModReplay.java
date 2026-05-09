@@ -65,7 +65,9 @@ public class ReplayModReplay implements Module {
                     CameraEntity camera = replayHandler.getCameraEntity();
                     if (camera != null) {
                         Marker marker = new Marker();
-                        marker.setTime(replayHandler.getReplaySender().currentTimeStamp());
+                        // Mark the position the user is actually looking at, not the extrapolated
+                        // playhead — at high speeds those can diverge by 100s of ms.
+                        marker.setTime(replayHandler.getReplaySender().getReachedTimeStamp());
                         marker.setX(camera.getX());
                         marker.setY(camera.getY());
                         marker.setZ(camera.getZ());

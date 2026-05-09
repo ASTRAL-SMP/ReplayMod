@@ -156,8 +156,10 @@ public class ReplayModSimplePathing extends EventRegistrations implements Module
                 guiPathing != null && guiPathing.deleteButtonPressed());
         keyPositionKeyframe = core.getKeyBindingRegistry().registerKeyBinding("replaymod.input.positionkeyframe", Keyboard.KEY_I, () -> {
             if (guiPathing != null) {
+                // Capture where the world actually is, not where the (extrapolated) playhead
+                // claims it is — important at high replay speeds.
                 int replayMs = com.replaymod.replay.ReplayModReplay.instance.getReplayHandler()
-                        .getReplaySender().currentTimeStamp();
+                        .getReplaySender().getReachedTimeStamp();
                 com.replaymod.simplepathing.gui.GuiAddKeyframesTimeline.openPosition(guiPathing, replayMs);
             }
         }, true);
@@ -169,7 +171,7 @@ public class ReplayModSimplePathing extends EventRegistrations implements Module
         keyTimeKeyframe = core.getKeyBindingRegistry().registerKeyBinding("replaymod.input.timekeyframe", Keyboard.KEY_O, () -> {
             if (guiPathing != null) {
                 int replayMs = com.replaymod.replay.ReplayModReplay.instance.getReplayHandler()
-                        .getReplaySender().currentTimeStamp();
+                        .getReplaySender().getReachedTimeStamp();
                 com.replaymod.simplepathing.gui.GuiAddKeyframesTimeline.openTime(guiPathing, replayMs);
             }
         }, true);

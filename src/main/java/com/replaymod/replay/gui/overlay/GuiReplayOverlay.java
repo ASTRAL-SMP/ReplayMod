@@ -67,7 +67,10 @@ public class GuiReplayOverlay extends AbstractGuiOverlay<GuiReplayOverlay> {
         timeline = new GuiMarkerTimeline(replayHandler){
             @Override
             public void draw(GuiRenderer renderer, ReadableDimension size, RenderInfo renderInfo) {
-                setCursorPosition(replayHandler.getReplaySender().currentTimeStamp());
+                // Use reached, not realtime-extrapolated, so the playhead doesn't sit ahead of
+                // the world at high speeds and snap back on pause. The keyframe timeline tracks
+                // this same cursor for auto-sync, so they stay in sync as a pair.
+                setCursorPosition(replayHandler.getReplaySender().getReachedTimeStamp());
                 super.draw(renderer, size, renderInfo);
             }
         }.setSize(Integer.MAX_VALUE, 20);
