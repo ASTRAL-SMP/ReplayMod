@@ -31,7 +31,14 @@
             # mingw-w64 toolchain kept around for objdump / nm / inspection;
             # not used as the active compiler.
             pkgsCross.mingwW64.stdenv.cc
-            nv-codec-headers
+            # nv-codec-headers (default attr) in nixpkgs 23.11 is 9.1.23.1, whose
+            # NVENCAPI_MAJOR_VERSION = 9 — that disables the entire `#if
+            # NVENCAPI_MAJOR_VERSION >= 10` branch in the native encoder and
+            # strips the new P1..P7 preset table out of the resulting DLL.
+            # Recent NVIDIA drivers / GPUs reject the legacy preset GUIDs, so a
+            # DLL built that way fails NvEncInitializeEncoder for every preset.
+            # Pin to 12.x so the new presets are always compiled in.
+            nv-codec-headers-12
             gradle
             ffmpeg-full
             vulkan-tools
@@ -50,7 +57,7 @@
             export JDK17_HOME=${pkgs.jdk17}/lib/openjdk
             export JDK21_HOME=${pkgs.jdk21}/lib/openjdk
             export JDK25_HOME=${unstablePkgs.jdk25}/lib/openjdk
-            export FFNV_CODEC_HEADERS=${pkgs.nv-codec-headers}/include
+            export FFNV_CODEC_HEADERS=${pkgs.nv-codec-headers-12}/include
             export JAVA_INCLUDE=$JDK21_HOME/include
             export REPLAYMOD_GRADLE_TOOLCHAINS="-Dorg.gradle.java.installations.fromEnv=JDK8_HOME,JDK16_HOME,JDK17_HOME,JDK21_HOME,JDK25_HOME -Dorg.gradle.java.installations.paths=$JDK8_HOME,$JDK16_HOME,$JDK17_HOME,$JDK21_HOME,$JDK25_HOME"
             export GRADLE_OPTS="$REPLAYMOD_GRADLE_TOOLCHAINS ''${GRADLE_OPTS:-}"

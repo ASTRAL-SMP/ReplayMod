@@ -815,19 +815,25 @@ struct Encoder {
             GUID guid;
             int tuning;
         };
+        // Try the modern P1..P7 presets first when the SDK headers expose them
+        // (NVENCAPI_MAJOR_VERSION >= 10). Recent NVIDIA drivers reject the
+        // legacy preset GUIDs outright with NV_ENC_ERR_UNSUPPORTED_PARAM, so
+        // without the new presets the DLL fails on every modern GPU. The
+        // legacy presets stay in the list unconditionally so that older
+        // drivers / GPUs still have a fallback path even when the headers are
+        // new enough to compile in the modern presets.
         std::vector<PresetAttempt> presetAttempts = {
 #if NVENCAPI_MAJOR_VERSION >= 10
                 {"p4-hq", NV_ENC_PRESET_P4_GUID, NV_ENC_TUNING_INFO_HIGH_QUALITY},
                 {"p4-lowlatency", NV_ENC_PRESET_P4_GUID, NV_ENC_TUNING_INFO_LOW_LATENCY},
                 {"p1-lowlatency", NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO_LOW_LATENCY},
                 {"p5-hq", NV_ENC_PRESET_P5_GUID, NV_ENC_TUNING_INFO_HIGH_QUALITY},
-#else
+#endif
                 {"legacy-hq", NV_ENC_PRESET_HQ_GUID, -1},
                 {"legacy-lowlatency-hq", NV_ENC_PRESET_LOW_LATENCY_HQ_GUID, -1},
                 {"legacy-lowlatency-hp", NV_ENC_PRESET_LOW_LATENCY_HP_GUID, -1},
                 {"legacy-default", NV_ENC_PRESET_DEFAULT_GUID, -1},
                 {"legacy-hp", NV_ENC_PRESET_HP_GUID, -1},
-#endif
         };
 
         for (const auto &presetAttempt : presetAttempts) {
