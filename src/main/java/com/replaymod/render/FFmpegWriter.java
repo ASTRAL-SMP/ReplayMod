@@ -19,7 +19,9 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -102,10 +104,11 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
         } catch (IOException e) {
             throw new NoFFmpegException(e);
         }
-        File exportLogFile = new File(MCVer.getMinecraft().runDirectory, "export.log");
+        File exportLogFile = resolveExportLogFile(settings);
         OutputStream exportLogOut = new TeeOutputStream(new FileOutputStream(exportLogFile), ffmpegLog);
         new StreamPipe(process.getInputStream(), exportLogOut).start();
         new StreamPipe(process.getErrorStream(), exportLogOut).start();
+        LOGGER.info("FFmpeg subprocess output is mirrored to {}.", exportLogFile.getAbsolutePath());
         outputStream = process.getOutputStream();
         maxQueuedFrames = Math.max(2, Math.min(8, settings.getRenderWorkerThreadCount()));
         stallTimeoutNanos = TimeUnit.SECONDS.toNanos(parseStallTimeoutSeconds());
@@ -151,6 +154,26 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
             value = System.getenv(NVENC_BGRA_ENV);
         }
         return value != null && Boolean.parseBoolean(value.trim());
+    }
+
+    // Each render gets its own log file under <runDir>/replay_debug/, named after the output
+    // video so it pairs 1:1 with the produced .mp4 (or with a wall-clock timestamp if no name
+    // is available). The prior behaviour was a single <runDir>/export.log that got overwritten
+    // on every render, which made it impossible to correlate FFmpeg output with a specific
+    // failed export after the fact.
+    private static File resolveExportLogFile(RenderSettings settings) throws IOException {
+        File debugDir = new File(MCVer.getMinecraft().runDirectory, "replay_debug");
+        FileUtils.forceMkdir(debugDir);
+        String stem;
+        File outputFile = settings.getOutputFile();
+        if (outputFile != null && outputFile.getName() != null && !outputFile.getName().isEmpty()) {
+            String name = outputFile.getName();
+            int dot = name.lastIndexOf('.');
+            stem = dot > 0 ? name.substring(0, dot) : name;
+        } else {
+            stem = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.ROOT).format(new Date());
+        }
+        return new File(debugDir, "export-" + stem + ".log");
     }
 
     @Override
