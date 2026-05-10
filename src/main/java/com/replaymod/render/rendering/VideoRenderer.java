@@ -493,6 +493,12 @@ public class VideoRenderer implements RenderInfo {
 
         // Finally, resize the Minecraft framebuffer to the actual width/height of the window
         resizeMainWindow(mc, guiWindow.getFramebufferWidth(), guiWindow.getFramebufferHeight());
+
+        // Drop the per-frame BGRA buffers (and any other render-only pool entries) immediately.
+        // Otherwise SoftReferences keep them alive until the next major GC, which on an idle
+        // post-render replay can be 20+ seconds — long enough to feel like the replay is stuck
+        // even though rendering is finished.
+        com.replaymod.render.utils.ByteBufferPool.clear();
     }
 
     private void executeTaskQueue() {

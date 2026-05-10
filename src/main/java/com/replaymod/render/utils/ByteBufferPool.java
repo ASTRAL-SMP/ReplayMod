@@ -68,4 +68,16 @@ public class ByteBufferPool {
         }
         available.add(new SoftReference<>(buffer));
     }
+
+    // Drop every pooled buffer and request a GC so the off-heap (DirectByteBuffer) ranges
+    // can be reclaimed. Soft references are otherwise only cleared under memory pressure,
+    // so after a render finishes the JVM happily holds onto ~ MAX_BUFFERS_PER_SIZE * frame
+    // size of native memory for many seconds (at 4K BGRA on a 16-core box that's ~600 MB).
+    public static synchronized void clear() {
+        directBufferPool.clear();
+        heapBufferPool.clear();
+        // Encourage prompt finalisation of DirectByteBuffer Cleaners so the off-heap memory
+        // is actually returned to the OS instead of waiting for the next major GC.
+        System.gc();
+    }
 }

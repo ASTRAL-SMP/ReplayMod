@@ -19,7 +19,9 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -35,6 +37,11 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
             "-y -f rawvideo -pix_fmt bgra -s %WIDTH%x%HEIGHT% -r %FPS% -i - %FILTERS%-an -c:v libx264 -b:v %BITRATE% -pix_fmt yuv420p \"%FILENAME%\"";
     private static final String LEGACY_WEBM_CUSTOM_ARGS =
             "-y -f rawvideo -pix_fmt bgra -s %WIDTH%x%HEIGHT% -r %FPS% -i - %FILTERS%-an -c:v libvpx -b:v %BITRATE% -pix_fmt yuv420p \"%FILENAME%\"";
+    private static final String NVENC_BGRA_PROPERTY = "replaymod.ffmpeg.nvencBgra";
+    private static final String NVENC_BGRA_ENV = "REPLAYMOD_FFMPEG_NVENC_BGRA";
+    private static final String STALL_TIMEOUT_PROPERTY = "replaymod.ffmpeg.stallTimeoutSeconds";
+    private static final String STALL_TIMEOUT_ENV = "REPLAYMOD_FFMPEG_STALL_TIMEOUT_SECONDS";
+    private static final long DEFAULT_STALL_TIMEOUT_SECONDS = 60;
 
     private final VideoRenderer renderer;
     private final RenderSettings settings;
@@ -46,6 +53,9 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
     private final Object queueLock = new Object();
     private final TreeMap<Integer, Map<Channel, BitmapFrame>> queuedFrames = new TreeMap<>();
     private final Thread writerThread;
+    private final Thread watchdogThread;
+    private final long stallTimeoutNanos;
+    private volatile long writeStartedNanos = -1;
     private byte[] writeBuffer;
     private volatile boolean aborted;
     private volatile Throwable writerFailure;
@@ -94,23 +104,76 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
         } catch (IOException e) {
             throw new NoFFmpegException(e);
         }
-        File exportLogFile = new File(MCVer.getMinecraft().runDirectory, "export.log");
+        File exportLogFile = resolveExportLogFile(settings);
         OutputStream exportLogOut = new TeeOutputStream(new FileOutputStream(exportLogFile), ffmpegLog);
         new StreamPipe(process.getInputStream(), exportLogOut).start();
         new StreamPipe(process.getErrorStream(), exportLogOut).start();
+        LOGGER.info("FFmpeg subprocess output is mirrored to {}.", exportLogFile.getAbsolutePath());
         outputStream = process.getOutputStream();
         maxQueuedFrames = Math.max(2, Math.min(8, settings.getRenderWorkerThreadCount()));
+        stallTimeoutNanos = TimeUnit.SECONDS.toNanos(parseStallTimeoutSeconds());
         writerThread = new Thread(this::runWriter, "replaymod-ffmpeg-writer");
         writerThread.setDaemon(true);
         writerThread.start();
+        watchdogThread = new Thread(this::runWatchdog, "replaymod-ffmpeg-watchdog");
+        watchdogThread.setDaemon(true);
+        watchdogThread.start();
 
         long rawBytesPerSecond = (long) settings.getVideoWidth()
                 * (long) settings.getVideoHeight()
                 * 4L
                 * (long) settings.getFramesPerSecond();
-        LOGGER.info("FFmpeg benchmark started: resolution={}x{}, fps={}, rawInputRate={}/s, targetBitrate={}/s",
+        LOGGER.info("FFmpeg benchmark started: resolution={}x{}, fps={}, rawInputRate={}/s, targetBitrate={}/s, stallTimeout={}s",
                 settings.getVideoWidth(), settings.getVideoHeight(), settings.getFramesPerSecond(),
-                formatBytes(rawBytesPerSecond), formatBytes(settings.getBitRate() / 8L));
+                formatBytes(rawBytesPerSecond), formatBytes(settings.getBitRate() / 8L),
+                TimeUnit.NANOSECONDS.toSeconds(stallTimeoutNanos));
+    }
+
+    private static long parseStallTimeoutSeconds() {
+        String value = System.getProperty(STALL_TIMEOUT_PROPERTY);
+        if (value == null || value.trim().isEmpty()) {
+            value = System.getenv(STALL_TIMEOUT_ENV);
+        }
+        if (value != null && !value.trim().isEmpty()) {
+            try {
+                long parsed = Long.parseLong(value.trim());
+                if (parsed > 0) {
+                    return parsed;
+                }
+            } catch (NumberFormatException e) {
+                LOGGER.warn("Ignoring invalid {} value '{}'; using default {}s.",
+                        STALL_TIMEOUT_PROPERTY, value, DEFAULT_STALL_TIMEOUT_SECONDS);
+            }
+        }
+        return DEFAULT_STALL_TIMEOUT_SECONDS;
+    }
+
+    private static boolean isNvencBgraEnabled() {
+        String value = System.getProperty(NVENC_BGRA_PROPERTY);
+        if (value == null || value.trim().isEmpty()) {
+            value = System.getenv(NVENC_BGRA_ENV);
+        }
+        return value != null && Boolean.parseBoolean(value.trim());
+    }
+
+    // Each render gets its own log file under <runDir>/replay_debug/, named after the output
+    // video so it pairs 1:1 with the produced .mp4 (or with a wall-clock timestamp if no name
+    // is available). The prior behaviour was a single <runDir>/export.log that got overwritten
+    // on every render, which made it impossible to correlate FFmpeg output with a specific
+    // failed export after the fact.
+    private static File resolveExportLogFile(RenderSettings settings) throws IOException {
+        File debugDir = new File(MCVer.getMinecraft().runDirectory, "replay_debug");
+        FileUtils.forceMkdir(debugDir);
+        String stem;
+        File outputFile = settings.getOutputFile();
+        if (outputFile != null && outputFile.getName() != null && !outputFile.getName().isEmpty()) {
+            String name = outputFile.getName();
+            int dot = name.lastIndexOf('.');
+            stem = dot > 0 ? name.substring(0, dot) : name;
+        } else {
+            stem = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.ROOT).format(new Date());
+        }
+        return new File(debugDir, "export-" + stem + ".log");
     }
 
     @Override
@@ -161,6 +224,12 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
 
         if (!exited) {
             process.destroy();
+        }
+        watchdogThread.interrupt();
+        try {
+            watchdogThread.join(TimeUnit.SECONDS.toMillis(2));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
         logFinalBenchmark(System.nanoTime(), System.nanoTime() - startTime, exited, exitCode);
     }
@@ -275,10 +344,15 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
             ByteBuffer buffer = frame.getByteBuffer();
             int frameBytes = buffer.remaining();
             long writeStartNanos = System.nanoTime();
-            if (firstFrameNanos < 0) {
-                firstFrameNanos = writeStartNanos;
+            writeStartedNanos = writeStartNanos;
+            try {
+                if (firstFrameNanos < 0) {
+                    firstFrameNanos = writeStartNanos;
+                }
+                writeBufferToFFmpeg(buffer);
+            } finally {
+                writeStartedNanos = -1;
             }
-            writeBufferToFFmpeg(buffer);
             long now = System.nanoTime();
             long frameWriteNanos = now - writeStartNanos;
             framesWritten++;
@@ -289,6 +363,57 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
             logProgressBenchmark(now, false);
         } finally {
             releaseFrames(channels);
+        }
+    }
+
+    private void runWatchdog() {
+        // FFmpeg's stdin pipe holds at most a few dozen KB of buffered data on Windows. If the
+        // child process stops draining its stdin (encoder init failure, broken filter graph,
+        // GPU OOM, etc.), the writer thread blocks inside outputStream.write forever, the queue
+        // fills, and Pipeline.run blocks the render thread on processService.submit -- which
+        // looks like Minecraft freezing solid. Detect that case here and break the deadlock with
+        // a clear failure instead of an unrecoverable hang.
+        long pollIntervalMillis = Math.max(1000, TimeUnit.NANOSECONDS.toMillis(stallTimeoutNanos) / 6);
+        while (!aborted && writerFailure == null) {
+            synchronized (queueLock) {
+                if (inputClosed && queuedFrames.isEmpty()) {
+                    return;
+                }
+            }
+            try {
+                Thread.sleep(pollIntervalMillis);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            long started = writeStartedNanos;
+            if (started <= 0) {
+                continue;
+            }
+            long elapsedNanos = System.nanoTime() - started;
+            if (elapsedNanos < stallTimeoutNanos) {
+                continue;
+            }
+            long elapsedSeconds = TimeUnit.NANOSECONDS.toSeconds(elapsedNanos);
+            String log = ffmpegLog.toString();
+            String tail = log.length() > 1024 ? log.substring(log.length() - 1024) : log;
+            IOException stall = new IOException(
+                    "FFmpeg has not consumed the rendered frame for " + elapsedSeconds
+                            + "s; aborting render.\nLast FFmpeg output:\n" + tail);
+            LOGGER.error("FFmpeg stdin stalled for {}s; killing FFmpeg subprocess to unblock the renderer. "
+                    + "Last FFmpeg output:\n{}", elapsedSeconds, tail);
+            writerFailure = stall;
+            aborted = true;
+            try {
+                process.destroyForcibly();
+            } catch (Throwable ignored) {
+            }
+            IOUtils.closeQuietly(outputStream);
+            synchronized (queueLock) {
+                queueLock.notifyAll();
+            }
+            renderer.setFailure(stall);
+            return;
         }
     }
 
@@ -520,16 +645,29 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
         if (encoders.contains(prefix + "_nvenc")) {
             String nvencName = prefix + "_nvenc";
             String filterChain = extractFilterChain(filters);
-            if (encoderSupportsPixelFormat(executable, nvencName, "bgra")) {
+            // Default to the long-standing CUDA NV12 upload path. The BGRA-direct fast path skips
+            // the format= + hwupload_cuda filter, but the resulting filter graph (especially
+            // sw vflip -> bgra -> nvenc at 4K/120) has been observed to stall Minecraft on first
+            // frame on some FFmpeg + driver combinations. Enable it explicitly via property/env
+            // when the user wants the optimisation.
+            boolean wantBgra = isNvencBgraEnabled();
+            boolean nvencAcceptsBgra = wantBgra && encoderSupportsPixelFormat(executable, nvencName, "bgra");
+            if (nvencAcceptsBgra) {
                 if (filterChain.isEmpty()) {
-                    LOGGER.info("Using {} direct BGRA input path; skipping CPU BGRA-to-NV12 filter before GPU upload.", nvencName);
+                    LOGGER.info("Using {} direct BGRA input path (opt-in); skipping CPU BGRA-to-NV12 filter before GPU upload.", nvencName);
                     encoder = "-c:v " + nvencName + " -preset p1 -pix_fmt bgra";
                 } else {
-                    LOGGER.info("Using {} BGRA input path with software filter chain: {}", nvencName, filterChain);
+                    LOGGER.info("Using {} BGRA input path with software filter chain (opt-in): {}", nvencName, filterChain);
                     encoder = "-filter:v " + filterChain + " -c:v " + nvencName + " -preset p1 -pix_fmt bgra";
                     consumesFilters = true;
                 }
             } else {
+                if (wantBgra) {
+                    LOGGER.info("Requested {} BGRA input path but the encoder does not advertise bgra; falling back to CUDA NV12 upload.", nvencName);
+                } else {
+                    LOGGER.info("Using {} via CUDA NV12 upload (set -D{}=true to enable the BGRA fast path).",
+                            nvencName, NVENC_BGRA_PROPERTY);
+                }
                 encoder = buildCudaUploadFilter(filters) + "-c:v " + nvencName + " -preset p1";
                 consumesFilters = true;
             }
