@@ -37,12 +37,16 @@ public class NativeOpenGlEncoder implements FrameConsumer<OpenGlTextureFrame> {
     public static boolean shouldUse(RenderSettings settings) {
         if (settings.getRenderMethod() != RenderSettings.RenderMethod.DEFAULT
                 || settings.isDepthMap()
-                || settings.getAntiAliasing() != RenderSettings.AntiAliasing.NONE
-                || settings.getEncodingPreset() != RenderSettings.EncodingPreset.MP4_HARDWARE) {
+                || settings.getAntiAliasing() != RenderSettings.AntiAliasing.NONE) {
+            return false;
+        }
+        RenderSettings.EncodingPreset preset = settings.getEncodingPreset();
+        if (preset != RenderSettings.EncodingPreset.MP4_HARDWARE
+                && preset != RenderSettings.EncodingPreset.MP4_HEVC_HARDWARE) {
             return false;
         }
         if (settings.getExportArguments() != null
-                && !settings.getExportArguments().equals(RenderSettings.EncodingPreset.MP4_HARDWARE.getValue())) {
+                && !settings.getExportArguments().equals(preset.getValue())) {
             return false;
         }
 
@@ -140,17 +144,20 @@ public class NativeOpenGlEncoder implements FrameConsumer<OpenGlTextureFrame> {
             throw new IOException("Failed to create output directory: " + outputFolder);
         }
 
+        int codec = settings.getEncodingPreset() == RenderSettings.EncodingPreset.MP4_HEVC_HARDWARE ? 1 : 0;
         handle = nativeOpen(
                 settings.getOutputFile().getAbsolutePath(),
                 settings.getVideoWidth(),
                 settings.getVideoHeight(),
                 settings.getFramesPerSecond(),
                 settings.getBitRate(),
+                codec,
                 true);
         if (handle == 0) {
             throw new IOException("Native encoder returned a null handle.");
         }
-        LOGGER.info("Using native OpenGL texture NVENC path: resolution={}x{}, fps={}, targetBitrate={}/s",
+        LOGGER.info("Using native OpenGL texture NVENC path: codec={}, resolution={}x{}, fps={}, targetBitrate={}/s",
+                codec == 1 ? "HEVC" : "H.264",
                 settings.getVideoWidth(), settings.getVideoHeight(), settings.getFramesPerSecond(),
                 formatBytes(settings.getBitRate() / 8L));
     }
@@ -263,7 +270,7 @@ public class NativeOpenGlEncoder implements FrameConsumer<OpenGlTextureFrame> {
         return String.format(Locale.ROOT, "%.2f%s", value, units[unit]);
     }
 
-    private static native long nativeOpen(String outputFile, int width, int height, int fps, int bitrate, boolean flipVertical) throws IOException;
+    private static native long nativeOpen(String outputFile, int width, int height, int fps, int bitrate, int codec, boolean flipVertical) throws IOException;
 
     private static native void nativeEncode(long handle, int frameId, int textureTarget, int textureId) throws IOException;
 

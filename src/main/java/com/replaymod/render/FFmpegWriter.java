@@ -427,10 +427,16 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
     private String buildCommandArgs(String executable, String fileName) {
         String args = upgradeLegacyPresetArguments(settings.getExportArguments());
         String videoFilters = getEffectiveVideoFilters();
-        HardwareH264Encoder hardwareEncoder = null;
+        HardwareEncoderArgs hardwareEncoder = null;
         if (args.contains("%HARDWARE_H264%")) {
-            hardwareEncoder = selectHardwareH264Encoder(executable, videoFilters);
+            hardwareEncoder = selectHardwareEncoder(executable, videoFilters, VideoCodec.H264);
             args = args.replace("%HARDWARE_H264%", hardwareEncoder.args);
+        } else if (args.contains("%HARDWARE_HEVC%")) {
+            hardwareEncoder = selectHardwareEncoder(executable, videoFilters, VideoCodec.HEVC);
+            args = args.replace("%HARDWARE_HEVC%", hardwareEncoder.args);
+        } else if (args.contains("%HARDWARE_AV1%")) {
+            hardwareEncoder = selectHardwareEncoder(executable, videoFilters, VideoCodec.AV1);
+            args = args.replace("%HARDWARE_AV1%", hardwareEncoder.args);
         }
         args = addThreadLimitForCpuEncoders(args);
         return args
@@ -477,7 +483,11 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
     private String addThreadLimitForCpuEncoders(String args) {
         String lowerArgs = args.toLowerCase(Locale.ROOT);
         if (lowerArgs.contains("-threads")
-                || (!lowerArgs.contains("libx264") && !lowerArgs.contains("libvpx"))) {
+                || (!lowerArgs.contains("libx264")
+                    && !lowerArgs.contains("libvpx")
+                    && !lowerArgs.contains("libx265")
+                    && !lowerArgs.contains("libsvtav1")
+                    && !lowerArgs.contains("libaom-av1"))) {
             return args;
         }
         int outputIndex = args.lastIndexOf("\"%FILENAME%\"");
@@ -491,51 +501,56 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
         return args.substring(0, outputIndex) + threads + args.substring(outputIndex);
     }
 
-    private HardwareH264Encoder selectHardwareH264Encoder(String executable, String filters) {
+    private HardwareEncoderArgs selectHardwareEncoder(String executable, String filters, VideoCodec codec) {
+        String prefix = codec.prefix;
         List<String> hwaccels = queryFFmpegFeatures(executable, "-hwaccels",
                 new String[]{"cuda", "d3d11va", "dxva2", "qsv", "vaapi", "vulkan", "opencl", "videotoolbox"});
         List<String> encoders = queryFFmpegFeatures(executable, "-encoders",
-                new String[]{"h264_nvenc", "h264_vaapi", "h264_qsv", "h264_amf", "h264_videotoolbox"});
+                new String[]{prefix + "_nvenc", prefix + "_vaapi", prefix + "_qsv", prefix + "_amf", prefix + "_videotoolbox"});
         List<String> gpuFilters = queryFFmpegFeatures(executable, "-filters",
                 new String[]{"hwupload", "hwupload_cuda", "hwmap", "scale_cuda", "scale_vaapi", "scale_qsv"});
         LOGGER.info("FFmpeg hardware acceleration methods: {}", hwaccels.isEmpty() ? "none detected" : hwaccels);
-        LOGGER.info("FFmpeg hardware H.264 encoders: {}", encoders.isEmpty() ? "none detected" : encoders);
+        LOGGER.info("FFmpeg hardware {} encoders: {}", codec.label, encoders.isEmpty() ? "none detected" : encoders);
         LOGGER.info("FFmpeg GPU upload/map filters: {}", gpuFilters.isEmpty() ? "none detected" : gpuFilters);
         LOGGER.info("ReplayMod currently feeds FFmpeg via rawvideo stdin, so hardware encoders still require a CPU-to-GPU upload. Zero-copy OpenGL texture handoff is not available through this FFmpeg CLI path.");
 
+        String tagSuffix = codec.mp4Tag != null ? " -tag:v " + codec.mp4Tag : "";
         String encoder = null;
         boolean consumesFilters = false;
-        if (encoders.contains("h264_nvenc")) {
+        if (encoders.contains(prefix + "_nvenc")) {
+            String nvencName = prefix + "_nvenc";
             String filterChain = extractFilterChain(filters);
-            if (encoderSupportsPixelFormat(executable, "h264_nvenc", "bgra")) {
+            if (encoderSupportsPixelFormat(executable, nvencName, "bgra")) {
                 if (filterChain.isEmpty()) {
-                    LOGGER.info("Using NVENC direct BGRA input path; skipping CPU BGRA-to-NV12 filter before GPU upload.");
-                    encoder = "-c:v h264_nvenc -preset p1 -pix_fmt bgra";
+                    LOGGER.info("Using {} direct BGRA input path; skipping CPU BGRA-to-NV12 filter before GPU upload.", nvencName);
+                    encoder = "-c:v " + nvencName + " -preset p1 -pix_fmt bgra";
                 } else {
-                    LOGGER.info("Using NVENC BGRA input path with software filter chain: {}", filterChain);
-                    encoder = "-filter:v " + filterChain + " -c:v h264_nvenc -preset p1 -pix_fmt bgra";
+                    LOGGER.info("Using {} BGRA input path with software filter chain: {}", nvencName, filterChain);
+                    encoder = "-filter:v " + filterChain + " -c:v " + nvencName + " -preset p1 -pix_fmt bgra";
                     consumesFilters = true;
                 }
             } else {
-                encoder = buildCudaUploadFilter(filters) + "-c:v h264_nvenc -preset p1";
+                encoder = buildCudaUploadFilter(filters) + "-c:v " + nvencName + " -preset p1";
                 consumesFilters = true;
             }
-        } else if (encoders.contains("h264_vaapi")) {
-            encoder = "-vaapi_device /dev/dri/renderD128 " + buildVaapiUploadFilter(filters) + "-c:v h264_vaapi -qp 23";
+        } else if (encoders.contains(prefix + "_vaapi")) {
+            encoder = "-vaapi_device /dev/dri/renderD128 " + buildVaapiUploadFilter(filters) + "-c:v " + prefix + "_vaapi -qp 23";
             consumesFilters = true;
-        } else if (encoders.contains("h264_qsv")) {
-            encoder = "h264_qsv -preset veryfast";
-        } else if (encoders.contains("h264_amf")) {
-            encoder = "h264_amf -quality speed";
-        } else if (encoders.contains("h264_videotoolbox")) {
-            encoder = "h264_videotoolbox";
+        } else if (encoders.contains(prefix + "_qsv")) {
+            encoder = "-c:v " + prefix + "_qsv -preset veryfast";
+        } else if (encoders.contains(prefix + "_amf")) {
+            encoder = "-c:v " + prefix + "_amf -quality speed";
+        } else if (encoders.contains(prefix + "_videotoolbox")) {
+            encoder = "-c:v " + prefix + "_videotoolbox";
         }
         if (encoder == null) {
-            LOGGER.warn("No supported hardware H.264 encoder found; falling back to libx264.");
-            return new HardwareH264Encoder("-c:v libx264 -preset veryfast -threads %THREADS% -b:v %BITRATE% -pix_fmt yuv420p", false);
+            LOGGER.warn("No supported hardware {} encoder found; falling back to {}.", codec.label, codec.cpuFallback);
+            return new HardwareEncoderArgs(
+                    "-c:v " + codec.cpuFallback + " -threads %THREADS% -b:v %BITRATE% -pix_fmt yuv420p" + tagSuffix,
+                    false);
         }
         LOGGER.info("Using FFmpeg hardware encoder: {}", encoder);
-        return new HardwareH264Encoder(encoder + " -b:v %BITRATE%", consumesFilters);
+        return new HardwareEncoderArgs(encoder + " -b:v %BITRATE%" + tagSuffix, consumesFilters);
     }
 
     private String buildCudaUploadFilter(String filters) {
@@ -571,13 +586,31 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
         return "";
     }
 
-    private static class HardwareH264Encoder {
+    private static class HardwareEncoderArgs {
         private final String args;
         private final boolean consumesFilters;
 
-        private HardwareH264Encoder(String args, boolean consumesFilters) {
+        private HardwareEncoderArgs(String args, boolean consumesFilters) {
             this.args = args;
             this.consumesFilters = consumesFilters;
+        }
+    }
+
+    private enum VideoCodec {
+        H264("h264", "H.264", "libx264 -preset veryfast", null),
+        HEVC("hevc", "HEVC", "libx265 -preset veryfast", "hvc1"),
+        AV1("av1", "AV1", "libsvtav1 -preset 8", null);
+
+        private final String prefix;
+        private final String label;
+        private final String cpuFallback;
+        private final String mp4Tag;
+
+        VideoCodec(String prefix, String label, String cpuFallback, String mp4Tag) {
+            this.prefix = prefix;
+            this.label = label;
+            this.cpuFallback = cpuFallback;
+            this.mp4Tag = mp4Tag;
         }
     }
 

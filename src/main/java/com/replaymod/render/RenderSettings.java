@@ -63,6 +63,10 @@ public class RenderSettings {
     public enum EncodingPreset {
         MP4_HARDWARE("-an %HARDWARE_H264% \"%FILENAME%\"", "mp4", "MP4 - H.264 Hardware"),
 
+        MP4_HEVC_HARDWARE("-an %HARDWARE_HEVC% \"%FILENAME%\"", "mp4", "MP4 - HEVC Hardware"),
+
+        MP4_AV1_HARDWARE("-an %HARDWARE_AV1% \"%FILENAME%\"", "mp4", "MP4 - AV1 Hardware"),
+
         MP4_CUSTOM("-an -c:v libx264 -preset veryfast -threads %THREADS% -b:v %BITRATE% -pix_fmt yuv420p \"%FILENAME%\"", "mp4", "MP4 - H.264 CPU"),
 
         MP4_POTATO("-an -c:v libx264 -preset ultrafast -threads %THREADS% -crf 51 -pix_fmt yuv420p \"%FILENAME%\"", "mp4", "MP4 - Very Low Quality"),
@@ -505,7 +509,8 @@ public class RenderSettings {
             return false;
         }
         String lowerArgs = args.toLowerCase();
-        return lowerArgs.contains("libx264") || lowerArgs.contains("libvpx");
+        return lowerArgs.contains("libx264") || lowerArgs.contains("libvpx")
+                || lowerArgs.contains("libx265") || lowerArgs.contains("libsvtav1") || lowerArgs.contains("libaom-av1");
     }
 
     @Override

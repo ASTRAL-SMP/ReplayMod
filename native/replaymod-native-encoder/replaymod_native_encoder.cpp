@@ -15,6 +15,11 @@
 
 namespace {
 
+enum class Codec {
+    H264 = 0,
+    HEVC = 1,
+};
+
 struct Sample {
     uint64_t offset = 0;
     uint32_t size = 0;
@@ -23,12 +28,14 @@ struct Sample {
 
 struct Mp4Writer {
     FILE *file = nullptr;
+    Codec codec = Codec::H264;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t fps = 0;
     uint64_t mdatSizeOffset = 0;
     uint64_t mdatDataStart = 0;
     std::vector<Sample> samples;
+    std::vector<uint8_t> vps; // HEVC only
     std::vector<uint8_t> sps;
     std::vector<uint8_t> pps;
 
@@ -85,10 +92,11 @@ struct Mp4Writer {
         writeU32(f, (uint32_t) v);
     }
 
-    void open(const std::string &path, uint32_t w, uint32_t h, uint32_t frameRate) {
+    void open(const std::string &path, uint32_t w, uint32_t h, uint32_t frameRate, Codec videoCodec) {
         width = w;
         height = h;
         fps = frameRate;
+        codec = videoCodec;
         file = fopen(path.c_str(), "wb+");
         if (!file) {
             throw std::runtime_error("failed to open output file");
@@ -100,7 +108,7 @@ struct Mp4Writer {
         putType(ftyp, "isom");
         putU32(ftyp, 0x200);
         putType(ftyp, "isom");
-        putType(ftyp, "avc1");
+        putType(ftyp, codec == Codec::HEVC ? "hvc1" : "avc1");
         fwrite(ftyp.data(), 1, ftyp.size(), file);
 
         writeU32(file, 1);
@@ -158,11 +166,22 @@ struct Mp4Writer {
             if (nal.second == 0) {
                 continue;
             }
-            uint8_t type = nal.first[0] & 0x1f;
-            if (type == 7) {
-                sps.assign(nal.first, nal.first + nal.second);
-            } else if (type == 8) {
-                pps.assign(nal.first, nal.first + nal.second);
+            if (codec == Codec::HEVC) {
+                uint8_t type = (nal.first[0] >> 1) & 0x3f;
+                if (type == 32) {
+                    vps.assign(nal.first, nal.first + nal.second);
+                } else if (type == 33) {
+                    sps.assign(nal.first, nal.first + nal.second);
+                } else if (type == 34) {
+                    pps.assign(nal.first, nal.first + nal.second);
+                }
+            } else {
+                uint8_t type = nal.first[0] & 0x1f;
+                if (type == 7) {
+                    sps.assign(nal.first, nal.first + nal.second);
+                } else if (type == 8) {
+                    pps.assign(nal.first, nal.first + nal.second);
+                }
             }
             writeU32(file, (uint32_t) nal.second);
             fwrite(nal.first, 1, nal.second, file);
@@ -174,8 +193,14 @@ struct Mp4Writer {
     }
 
     std::vector<uint8_t> makeMoov() {
-        if (sps.size() < 4 || pps.empty()) {
-            throw std::runtime_error("NVENC did not output H.264 SPS/PPS");
+        if (codec == Codec::HEVC) {
+            if (vps.empty() || sps.size() < 15 || pps.empty()) {
+                throw std::runtime_error("NVENC did not output HEVC VPS/SPS/PPS");
+            }
+        } else {
+            if (sps.size() < 4 || pps.empty()) {
+                throw std::runtime_error("NVENC did not output H.264 SPS/PPS");
+            }
         }
         std::vector<uint8_t> out;
         uint32_t movieTimescale = 1000;
@@ -249,34 +274,82 @@ struct Mp4Writer {
         size_t stbl = beginBox(out, "stbl");
         size_t stsd = beginBox(out, "stsd");
         putU32(out, 0); putU32(out, 1);
-        size_t avc1 = beginBox(out, "avc1");
-        for (int i = 0; i < 6; i++) putU8(out, 0);
-        putU16(out, 1);
-        putU16(out, 0); putU16(out, 0);
-        putU32(out, 0); putU32(out, 0); putU32(out, 0);
-        putU16(out, (uint16_t) width);
-        putU16(out, (uint16_t) height);
-        putU32(out, 0x00480000); putU32(out, 0x00480000);
-        putU32(out, 0);
-        putU16(out, 1);
-        putU8(out, 0);
-        for (int i = 0; i < 31; i++) putU8(out, 0);
-        putU16(out, 24);
-        putU16(out, 0xffff);
-        size_t avcC = beginBox(out, "avcC");
-        putU8(out, 1);
-        putU8(out, sps[1]);
-        putU8(out, sps[2]);
-        putU8(out, sps[3]);
-        putU8(out, 0xff);
-        putU8(out, 0xe1);
-        putU16(out, (uint16_t) sps.size());
-        out.insert(out.end(), sps.begin(), sps.end());
-        putU8(out, 1);
-        putU16(out, (uint16_t) pps.size());
-        out.insert(out.end(), pps.begin(), pps.end());
-        endBox(out, avcC);
-        endBox(out, avc1);
+        if (codec == Codec::HEVC) {
+            size_t hvc1 = beginBox(out, "hvc1");
+            for (int i = 0; i < 6; i++) putU8(out, 0);
+            putU16(out, 1);
+            putU16(out, 0); putU16(out, 0);
+            putU32(out, 0); putU32(out, 0); putU32(out, 0);
+            putU16(out, (uint16_t) width);
+            putU16(out, (uint16_t) height);
+            putU32(out, 0x00480000); putU32(out, 0x00480000);
+            putU32(out, 0);
+            putU16(out, 1);
+            putU8(out, 0);
+            for (int i = 0; i < 31; i++) putU8(out, 0);
+            putU16(out, 24);
+            putU16(out, 0xffff);
+            size_t hvcC = beginBox(out, "hvcC");
+            putU8(out, 1);
+            // profile_tier_level (12 bytes) lifted from the SPS RBSP starting at byte 3
+            // (NAL header 2 bytes + sps_video_parameter_set_id/max_sub_layers/temporal_id_nesting 1 byte).
+            out.insert(out.end(), sps.begin() + 3, sps.begin() + 15);
+            putU16(out, 0xF000);              // reserved + min_spatial_segmentation_idc
+            putU8(out, 0xFC);                 // reserved + parallelismType (0)
+            putU8(out, (uint8_t) (0xFC | 1)); // reserved + chromaFormat (4:2:0)
+            putU8(out, 0xF8);                 // reserved + bitDepthLumaMinus8 (0)
+            putU8(out, 0xF8);                 // reserved + bitDepthChromaMinus8 (0)
+            putU16(out, 0);                   // avgFrameRate
+            // constantFrameRate (0) | numTemporalLayers (1) | temporalIdNested (1) | lengthSizeMinusOne (3)
+            putU8(out, (uint8_t) ((0 << 6) | (1 << 3) | (1 << 2) | 3));
+            putU8(out, 3);                    // numOfArrays (VPS, SPS, PPS)
+            // VPS array
+            putU8(out, (uint8_t) (0x80 | 32));
+            putU16(out, 1);
+            putU16(out, (uint16_t) vps.size());
+            out.insert(out.end(), vps.begin(), vps.end());
+            // SPS array
+            putU8(out, (uint8_t) (0x80 | 33));
+            putU16(out, 1);
+            putU16(out, (uint16_t) sps.size());
+            out.insert(out.end(), sps.begin(), sps.end());
+            // PPS array
+            putU8(out, (uint8_t) (0x80 | 34));
+            putU16(out, 1);
+            putU16(out, (uint16_t) pps.size());
+            out.insert(out.end(), pps.begin(), pps.end());
+            endBox(out, hvcC);
+            endBox(out, hvc1);
+        } else {
+            size_t avc1 = beginBox(out, "avc1");
+            for (int i = 0; i < 6; i++) putU8(out, 0);
+            putU16(out, 1);
+            putU16(out, 0); putU16(out, 0);
+            putU32(out, 0); putU32(out, 0); putU32(out, 0);
+            putU16(out, (uint16_t) width);
+            putU16(out, (uint16_t) height);
+            putU32(out, 0x00480000); putU32(out, 0x00480000);
+            putU32(out, 0);
+            putU16(out, 1);
+            putU8(out, 0);
+            for (int i = 0; i < 31; i++) putU8(out, 0);
+            putU16(out, 24);
+            putU16(out, 0xffff);
+            size_t avcC = beginBox(out, "avcC");
+            putU8(out, 1);
+            putU8(out, sps[1]);
+            putU8(out, sps[2]);
+            putU8(out, sps[3]);
+            putU8(out, 0xff);
+            putU8(out, 0xe1);
+            putU16(out, (uint16_t) sps.size());
+            out.insert(out.end(), sps.begin(), sps.end());
+            putU8(out, 1);
+            putU16(out, (uint16_t) pps.size());
+            out.insert(out.end(), pps.begin(), pps.end());
+            endBox(out, avcC);
+            endBox(out, avc1);
+        }
         endBox(out, stsd);
 
         size_t stts = beginBox(out, "stts");
@@ -353,6 +426,8 @@ struct Encoder {
     void *encoder = nullptr;
     NV_ENC_OUTPUT_PTR bitstream = nullptr;
     Mp4Writer mp4;
+    Codec codec = Codec::H264;
+    GUID encodeGuid = NV_ENC_CODEC_H264_GUID;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t fps = 0;
@@ -518,7 +593,7 @@ struct Encoder {
     NV_ENC_INITIALIZE_PARAMS makeInit(GUID presetGuid, uint32_t frameRate, int tuningInfo) {
         NV_ENC_INITIALIZE_PARAMS init = {};
         init.version = NV_ENC_INITIALIZE_PARAMS_VER;
-        init.encodeGUID = NV_ENC_CODEC_H264_GUID;
+        init.encodeGUID = encodeGuid;
         init.presetGUID = presetGuid;
         init.encodeWidth = width;
         init.encodeHeight = height;
@@ -548,16 +623,16 @@ struct Encoder {
         NVENCSTATUS status;
         if (tuningInfo >= 0 && api.nvEncGetEncodePresetConfigEx) {
             status = api.nvEncGetEncodePresetConfigEx(
-                    encoder, NV_ENC_CODEC_H264_GUID, presetGuid,
+                    encoder, encodeGuid, presetGuid,
                     (NV_ENC_TUNING_INFO) tuningInfo, &preset);
         } else {
             status = api.nvEncGetEncodePresetConfig(
-                    encoder, NV_ENC_CODEC_H264_GUID, presetGuid, &preset);
+                    encoder, encodeGuid, presetGuid, &preset);
         }
 #else
         (void) tuningInfo;
         NVENCSTATUS status = api.nvEncGetEncodePresetConfig(
-                encoder, NV_ENC_CODEC_H264_GUID, presetGuid, &preset);
+                encoder, encodeGuid, presetGuid, &preset);
 #endif
 
         if (status != NV_ENC_SUCCESS) {
@@ -619,6 +694,75 @@ struct Encoder {
 #endif
     }
 
+    // HEVC counterpart of applyH264Config. Same rate-control logic; only the codec-config
+    // section moves from h264Config to hevcConfig. outputAUD is left at the preset default
+    // (also rejected by Blackwell when forced) and bit depth is pinned to 8-bit.
+    void applyHevcConfig(NV_ENC_CONFIG &config, uint32_t frameRate, uint32_t bitrate, bool constQp) {
+        config.profileGUID = NV_ENC_CODEC_PROFILE_AUTOSELECT_GUID;
+        config.gopLength = frameRate * 2;
+        config.frameIntervalP = 1;
+        config.frameFieldMode = NV_ENC_PARAMS_FRAME_FIELD_MODE_FRAME;
+        config.mvPrecision = NV_ENC_MV_PRECISION_DEFAULT;
+#ifdef NV_ENC_RC_PARAMS_VER
+        config.rcParams.version = NV_ENC_RC_PARAMS_VER;
+#endif
+        config.rcParams.zeroReorderDelay = 1;
+        if (constQp) {
+            config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+            config.rcParams.averageBitRate = 0;
+            config.rcParams.maxBitRate = 0;
+            config.rcParams.vbvBufferSize = 0;
+            config.rcParams.vbvInitialDelay = 0;
+            config.rcParams.constQP.qpIntra = 20;
+            config.rcParams.constQP.qpInterP = 23;
+            config.rcParams.constQP.qpInterB = 23;
+        } else {
+            config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
+            config.rcParams.averageBitRate = bitrate;
+            config.rcParams.maxBitRate = bitrate * 2;
+            config.rcParams.vbvBufferSize = std::max<uint32_t>(1, bitrate / std::max<uint32_t>(1, frameRate)) * 2;
+            config.rcParams.vbvInitialDelay = config.rcParams.vbvBufferSize / 2;
+        }
+        config.encodeCodecConfig.hevcConfig.level = NV_ENC_LEVEL_AUTOSELECT;
+        config.encodeCodecConfig.hevcConfig.idrPeriod = frameRate * 2;
+        config.encodeCodecConfig.hevcConfig.repeatSPSPPS = 1;
+        config.encodeCodecConfig.hevcConfig.chromaFormatIDC = 1;
+#ifdef NV_ENC_BIT_DEPTH_8
+        config.encodeCodecConfig.hevcConfig.inputBitDepth = NV_ENC_BIT_DEPTH_8;
+        config.encodeCodecConfig.hevcConfig.outputBitDepth = NV_ENC_BIT_DEPTH_8;
+#endif
+    }
+
+    void applyConfig(NV_ENC_CONFIG &config, uint32_t frameRate, uint32_t bitrate, bool constQp) {
+        if (codec == Codec::HEVC) {
+            applyHevcConfig(config, frameRate, bitrate, constQp);
+        } else {
+            applyH264Config(config, frameRate, bitrate, constQp);
+        }
+    }
+
+    void verifyCodecSupported() {
+        uint32_t encodeGuidCount = 0;
+        if (api.nvEncGetEncodeGUIDCount(encoder, &encodeGuidCount) != NV_ENC_SUCCESS || encodeGuidCount == 0) {
+            return; // Best-effort probe; if it fails we let nvEncInitializeEncoder report the real error.
+        }
+        std::vector<GUID> guids(encodeGuidCount);
+        uint32_t numFilled = 0;
+        if (api.nvEncGetEncodeGUIDs(encoder, guids.data(), encodeGuidCount, &numFilled) != NV_ENC_SUCCESS) {
+            return;
+        }
+        for (uint32_t i = 0; i < numFilled; i++) {
+            if (memcmp(&guids[i], &encodeGuid, sizeof(GUID)) == 0) {
+                return;
+            }
+        }
+        const char *name = codec == Codec::HEVC ? "HEVC" : "H.264";
+        std::string msg = "NVENC on this device does not advertise support for ";
+        msg += name;
+        msg += "; falling back to FFmpeg.";
+        throw std::runtime_error(msg);
+    }
+
     bool tryInitialize(const char *name, NV_ENC_INITIALIZE_PARAMS &init,
                        std::string &attempts, bool reopenAfterFailure) {
         NVENCSTATUS status = api.nvEncInitializeEncoder(encoder, &init);
@@ -639,10 +783,12 @@ struct Encoder {
         return false;
     }
 
-    void open(const std::string &path, uint32_t w, uint32_t h, uint32_t frameRate, uint32_t bitrate) {
+    void open(const std::string &path, uint32_t w, uint32_t h, uint32_t frameRate, uint32_t bitrate, Codec videoCodec) {
         width = w;
         height = h;
         fps = frameRate;
+        codec = videoCodec;
+        encodeGuid = codec == Codec::HEVC ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID;
         nvencDll = LoadLibraryA("nvEncodeAPI64.dll");
         if (!nvencDll) {
             throw std::runtime_error("failed to load nvEncodeAPI64.dll");
@@ -659,6 +805,7 @@ struct Encoder {
         createCudaContext();
 
         openEncodeSession();
+        verifyCodecSupported();
 
         std::string attempts;
         bool initialized = false;
@@ -686,7 +833,7 @@ struct Encoder {
         for (const auto &presetAttempt : presetAttempts) {
             NV_ENC_CONFIG cbrConfig = {};
             if (getPresetConfig(presetAttempt.guid, presetAttempt.tuning, cbrConfig, presetAttempt.name, attempts)) {
-                applyH264Config(cbrConfig, frameRate, bitrate, false);
+                applyConfig(cbrConfig, frameRate, bitrate, false);
                 NV_ENC_INITIALIZE_PARAMS init = makeInit(presetAttempt.guid, frameRate, presetAttempt.tuning);
                 init.encodeConfig = &cbrConfig;
                 std::string name = std::string(presetAttempt.name) + "-cbr";
@@ -698,7 +845,7 @@ struct Encoder {
 
             NV_ENC_CONFIG constQpConfig = {};
             if (getPresetConfig(presetAttempt.guid, presetAttempt.tuning, constQpConfig, presetAttempt.name, attempts)) {
-                applyH264Config(constQpConfig, frameRate, bitrate, true);
+                applyConfig(constQpConfig, frameRate, bitrate, true);
                 NV_ENC_INITIALIZE_PARAMS init = makeInit(presetAttempt.guid, frameRate, presetAttempt.tuning);
                 init.encodeConfig = &constQpConfig;
                 std::string name = std::string(presetAttempt.name) + "-constqp";
@@ -726,7 +873,7 @@ struct Encoder {
         bs.version = NV_ENC_CREATE_BITSTREAM_BUFFER_VER;
         check(api.nvEncCreateBitstreamBuffer(encoder, &bs), "NvEncCreateBitstreamBuffer");
         bitstream = bs.bitstreamBuffer;
-        mp4.open(path, width, height, fps);
+        mp4.open(path, width, height, fps, codec);
     }
 
     void encode(uint32_t frameId, uint32_t textureTarget, uint32_t textureId) {
@@ -858,11 +1005,13 @@ void throwIo(JNIEnv *env, const std::exception &e) {
 
 extern "C" __declspec(dllexport) jlong JNICALL
 Java_com_replaymod_render_NativeOpenGlEncoder_nativeOpen(
-        JNIEnv *env, jclass, jstring outputFile, jint width, jint height, jint fps, jint bitrate, jboolean) {
+        JNIEnv *env, jclass, jstring outputFile, jint width, jint height, jint fps, jint bitrate,
+        jint codec, jboolean) {
     try {
         auto *encoder = new Encoder();
+        Codec videoCodec = codec == 1 ? Codec::HEVC : Codec::H264;
         encoder->open(jstringToUtf(env, outputFile), (uint32_t) width, (uint32_t) height,
-                      (uint32_t) fps, (uint32_t) bitrate);
+                      (uint32_t) fps, (uint32_t) bitrate, videoCodec);
         return (jlong) encoder;
     } catch (const std::exception &e) {
         throwIo(env, e);
