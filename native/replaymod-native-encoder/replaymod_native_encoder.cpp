@@ -686,13 +686,16 @@ struct Encoder {
             // and visibly blurred high-motion scenes.
             config.rcParams.vbvBufferSize = bitrate;
             config.rcParams.vbvInitialDelay = bitrate / 2;
-            // Spatial+temporal AQ shifts bits toward visually important regions
-            // and away from smooth surfaces (sky, water, GUI panels). On Minecraft
-            // content this is the single largest knob between "looks like NVENC
-            // 2018" and "looks like libx264 veryfast".
+            // Spatial AQ shifts bits toward visually important regions and away
+            // from smooth surfaces (sky, water, GUI panels). On Minecraft content
+            // this is the single largest knob between "looks like NVENC 2018"
+            // and "looks like libx264 veryfast". Temporal AQ would help a bit
+            // more, but it forces NVENC to keep a look-ahead window of frames
+            // in VRAM and was observed to stall the render pipeline at 4K@120fps
+            // on 6 GiB-class Turing parts, so we leave it off.
             config.rcParams.enableAQ = 1;
             config.rcParams.aqStrength = 8;
-            config.rcParams.enableTemporalAQ = 1;
+            config.rcParams.enableTemporalAQ = 0;
         }
     }
 

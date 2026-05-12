@@ -661,19 +661,19 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
 
         String tagSuffix = codec.mp4Tag != null ? " -tag:v " + codec.mp4Tag : "";
         boolean speedProfile = isHwSpeedProfile();
-        // p5 + hq tune + spatial/temporal AQ roughly matches `libx264 -preset
-        // veryfast` quality at the same bitrate while still running noticeably
-        // faster than libx264 on Turing+ NVENC. We omit `-multipass fullres`
-        // deliberately: it is a Turing-era option and older drivers reject the
-        // encoder init outright instead of ignoring it.
-        //
-        // H.264 NVENC supports B-frames on every NVENC-capable GPU; HEVC NVENC
-        // only supports them on Turing+ and Pascal drivers fail init when asked
-        // for HEVC B-frames, so we keep -bf 0 on the HEVC path.
-        String bFrameOpt = (codec == VideoCodec.H264) ? " -bf 3" : "";
+        // p5 + hq tune + spatial AQ delivers most of the quality gap vs
+        // `libx264 -preset veryfast` at the same bitrate. We deliberately do
+        // NOT enable temporal-aq or B-frames here even though both improve
+        // PSNR/SSIM, because both add NVENC look-ahead frames that buffer in
+        // VRAM and stall the FFmpeg filter graph at high resolutions on
+        // 6 GiB-class Turing parts (observed: 4K@120fps on GTX 1660 SUPER
+        // hangs after ~10 frames with `-temporal-aq 1 -bf 3`). Spatial AQ
+        // alone is the safe quality knob across the NVENC range.
+        // `-multipass fullres` is also intentionally omitted: pre-Turing
+        // drivers reject the encoder init outright instead of ignoring it.
         String nvencTuning = speedProfile
                 ? "-preset p1"
-                : "-preset p5 -tune hq -rc vbr -spatial-aq 1 -temporal-aq 1" + bFrameOpt;
+                : "-preset p5 -tune hq -rc vbr -spatial-aq 1";
         String encoder = null;
         boolean consumesFilters = false;
         if (encoders.contains(prefix + "_nvenc")) {
