@@ -651,6 +651,51 @@ struct Encoder {
         return true;
     }
 
+    // Common rate-control fill-out used by both H.264 and HEVC. The historical
+    // path used a vbvBufferSize of just 2 frames and left adaptive quantization
+    // off, both of which were inherited from low-latency streaming tunings. For
+    // an offline ReplayMod render we want a ~1 second VBV (so the encoder can
+    // borrow bits across complex/simple scenes) and spatial+temporal AQ so that
+    // Minecraft's smooth surfaces (sky, water, hand-held screens) do not get
+    // visibly banded at the same target bitrate.
+    void applyRateControl(NV_ENC_CONFIG &config, uint32_t frameRate, uint32_t bitrate, bool constQp) {
+#ifdef NV_ENC_RC_PARAMS_VER
+        config.rcParams.version = NV_ENC_RC_PARAMS_VER;
+#endif
+        config.rcParams.zeroReorderDelay = 1;
+        if (constQp) {
+            // CONSTQP is the fallback path when VBR init fails. Some older drivers
+            // reject the CONSTQP+AQ combination outright, which would defeat the
+            // whole point of having a fallback, so leave AQ disabled here.
+            config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+            config.rcParams.averageBitRate = 0;
+            config.rcParams.maxBitRate = 0;
+            config.rcParams.vbvBufferSize = 0;
+            config.rcParams.vbvInitialDelay = 0;
+            config.rcParams.enableAQ = 0;
+            config.rcParams.enableTemporalAQ = 0;
+            config.rcParams.constQP.qpIntra = 20;
+            config.rcParams.constQP.qpInterP = 23;
+            config.rcParams.constQP.qpInterB = 23;
+        } else {
+            config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
+            config.rcParams.averageBitRate = bitrate;
+            config.rcParams.maxBitRate = bitrate * 2;
+            // ~1 second of buffered bandwidth lets the rate controller spend bits
+            // on hard frames; the previous 2-frame buffer forced near-CBR behaviour
+            // and visibly blurred high-motion scenes.
+            config.rcParams.vbvBufferSize = bitrate;
+            config.rcParams.vbvInitialDelay = bitrate / 2;
+            // Spatial+temporal AQ shifts bits toward visually important regions
+            // and away from smooth surfaces (sky, water, GUI panels). On Minecraft
+            // content this is the single largest knob between "looks like NVENC
+            // 2018" and "looks like libx264 veryfast".
+            config.rcParams.enableAQ = 1;
+            config.rcParams.aqStrength = 8;
+            config.rcParams.enableTemporalAQ = 1;
+        }
+    }
+
     // Apply a minimal H.264 configuration on top of the preset that NVENC returned.
     // Older drivers and recent Blackwell drivers reject some combinations that older
     // ReplayMod releases set unconditionally (explicit bit depths, outputAUD, etc.) so
@@ -661,26 +706,7 @@ struct Encoder {
         config.frameIntervalP = 1;
         config.frameFieldMode = NV_ENC_PARAMS_FRAME_FIELD_MODE_FRAME;
         config.mvPrecision = NV_ENC_MV_PRECISION_DEFAULT;
-#ifdef NV_ENC_RC_PARAMS_VER
-        config.rcParams.version = NV_ENC_RC_PARAMS_VER;
-#endif
-        config.rcParams.zeroReorderDelay = 1;
-        if (constQp) {
-            config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-            config.rcParams.averageBitRate = 0;
-            config.rcParams.maxBitRate = 0;
-            config.rcParams.vbvBufferSize = 0;
-            config.rcParams.vbvInitialDelay = 0;
-            config.rcParams.constQP.qpIntra = 20;
-            config.rcParams.constQP.qpInterP = 23;
-            config.rcParams.constQP.qpInterB = 23;
-        } else {
-            config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-            config.rcParams.averageBitRate = bitrate;
-            config.rcParams.maxBitRate = bitrate * 2;
-            config.rcParams.vbvBufferSize = std::max<uint32_t>(1, bitrate / std::max<uint32_t>(1, frameRate)) * 2;
-            config.rcParams.vbvInitialDelay = config.rcParams.vbvBufferSize / 2;
-        }
+        applyRateControl(config, frameRate, bitrate, constQp);
         config.encodeCodecConfig.h264Config.level = NV_ENC_LEVEL_AUTOSELECT;
         config.encodeCodecConfig.h264Config.idrPeriod = frameRate * 2;
         config.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
@@ -703,26 +729,7 @@ struct Encoder {
         config.frameIntervalP = 1;
         config.frameFieldMode = NV_ENC_PARAMS_FRAME_FIELD_MODE_FRAME;
         config.mvPrecision = NV_ENC_MV_PRECISION_DEFAULT;
-#ifdef NV_ENC_RC_PARAMS_VER
-        config.rcParams.version = NV_ENC_RC_PARAMS_VER;
-#endif
-        config.rcParams.zeroReorderDelay = 1;
-        if (constQp) {
-            config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-            config.rcParams.averageBitRate = 0;
-            config.rcParams.maxBitRate = 0;
-            config.rcParams.vbvBufferSize = 0;
-            config.rcParams.vbvInitialDelay = 0;
-            config.rcParams.constQP.qpIntra = 20;
-            config.rcParams.constQP.qpInterP = 23;
-            config.rcParams.constQP.qpInterB = 23;
-        } else {
-            config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-            config.rcParams.averageBitRate = bitrate;
-            config.rcParams.maxBitRate = bitrate * 2;
-            config.rcParams.vbvBufferSize = std::max<uint32_t>(1, bitrate / std::max<uint32_t>(1, frameRate)) * 2;
-            config.rcParams.vbvInitialDelay = config.rcParams.vbvBufferSize / 2;
-        }
+        applyRateControl(config, frameRate, bitrate, constQp);
         config.encodeCodecConfig.hevcConfig.level = NV_ENC_LEVEL_AUTOSELECT;
         config.encodeCodecConfig.hevcConfig.idrPeriod = frameRate * 2;
         config.encodeCodecConfig.hevcConfig.repeatSPSPPS = 1;
