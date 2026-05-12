@@ -19,7 +19,9 @@ VAAPI requires `/dev/dri/renderD128` and an FFmpeg build with `h264_vaapi`. On L
 
 ### Quality vs speed trade-off
 
-By default the FFmpeg hardware path now uses quality-tuned encoder settings for offline file rendering (NVENC `p5 -tune hq` with spatial/temporal AQ, QSV `slower`, AMF `balanced`, VAAPI VBR). The old streaming-tuned defaults (`p1` / `veryfast` / `quality speed`) produced visibly blockier video than `libx264 -preset veryfast` at the same bitrate, which is what users compared against when they said the optimised export "looks rougher" than the regular export.
+By default the FFmpeg hardware path now uses quality-tuned encoder settings for offline file rendering (NVENC `p5 -tune hq -rc vbr -spatial-aq 1`, QSV `slower`, AMF `balanced`, VAAPI VBR). The old streaming-tuned defaults (`p1` / `veryfast` / `quality speed`) produced visibly blockier video than `libx264 -preset veryfast` at the same bitrate, which is what users compared against when they said the optimised export "looks rougher" than the regular export.
+
+Temporal AQ and NVENC B-frames are intentionally not enabled by default: at 4K@120 fps on 6 GiB-class Turing parts (e.g. GTX 1660 SUPER) the combination starves NVENC's look-ahead buffer and hangs the FFmpeg filter graph after a handful of frames. Spatial AQ alone is the safe quality knob across the NVENC range.
 
 If you need maximum encoding throughput and accept lower visual quality (e.g. for very long renders on a slow GPU), restore the old behaviour with:
 
