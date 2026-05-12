@@ -16,3 +16,11 @@ Encoder priority is:
 NVENC requires a working NVIDIA driver and an FFmpeg build compiled with NVENC support. The Nix dev shell provides FFmpeg, but it cannot provide the host NVIDIA kernel driver.
 
 VAAPI requires `/dev/dri/renderD128` and an FFmpeg build with `h264_vaapi`. On Linux, ensure the user running Minecraft has access to the render device.
+
+## GPUオフロード方針
+
+RAM依存処理とGPU依存処理の切り分け方針は `docs/gpu-offload-feasibility.md` を参照してください。
+
+## Project Panama 計画
+
+JVMからネイティブHWアクセスへ段階移行する計画は `docs/panama-native-hardware-plan.md` を参照してください。
