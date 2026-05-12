@@ -42,6 +42,18 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
     private static final String STALL_TIMEOUT_PROPERTY = "replaymod.ffmpeg.stallTimeoutSeconds";
     private static final String STALL_TIMEOUT_ENV = "REPLAYMOD_FFMPEG_STALL_TIMEOUT_SECONDS";
     private static final long DEFAULT_STALL_TIMEOUT_SECONDS = 60;
+    // Quality preset for hardware encoders. The historical defaults (NVENC `p1`,
+    // QSV `veryfast`, AMF `quality speed`) target real-time streaming and are
+    // visibly blockier than vanilla `libx264 -preset veryfast` at the same target
+    // bitrate, which is what users compare against when they say the optimised
+    // render path "looks rougher" than the regular render. The new defaults are
+    // tuned for offline/file encoding (NVENC `p5 -tune hq`, QSV `slower`,
+    // AMF `balanced`). Set this property to `speed` to restore the old behaviour
+    // when you actually need maximum encoding throughput over output quality.
+    private static final String HW_PROFILE_PROPERTY = "replaymod.ffmpeg.hwProfile";
+    private static final String HW_PROFILE_ENV = "REPLAYMOD_FFMPEG_HW_PROFILE";
+    private static final String HW_PROFILE_QUALITY = "quality";
+    private static final String HW_PROFILE_SPEED = "speed";
 
     private final VideoRenderer renderer;
     private final RenderSettings settings;
@@ -154,6 +166,14 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
             value = System.getenv(NVENC_BGRA_ENV);
         }
         return value != null && Boolean.parseBoolean(value.trim());
+    }
+
+    private static boolean isHwSpeedProfile() {
+        String value = System.getProperty(HW_PROFILE_PROPERTY);
+        if (value == null || value.trim().isEmpty()) {
+            value = System.getenv(HW_PROFILE_ENV);
+        }
+        return value != null && HW_PROFILE_SPEED.equalsIgnoreCase(value.trim());
     }
 
     // Each render gets its own log file under <runDir>/replay_debug/, named after the output
@@ -640,6 +660,20 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
         LOGGER.info("ReplayMod currently feeds FFmpeg via rawvideo stdin, so hardware encoders still require a CPU-to-GPU upload. Zero-copy OpenGL texture handoff is not available through this FFmpeg CLI path.");
 
         String tagSuffix = codec.mp4Tag != null ? " -tag:v " + codec.mp4Tag : "";
+        boolean speedProfile = isHwSpeedProfile();
+        // p5 + hq tune + spatial/temporal AQ roughly matches `libx264 -preset
+        // veryfast` quality at the same bitrate while still running noticeably
+        // faster than libx264 on Turing+ NVENC. We omit `-multipass fullres`
+        // deliberately: it is a Turing-era option and older drivers reject the
+        // encoder init outright instead of ignoring it.
+        //
+        // H.264 NVENC supports B-frames on every NVENC-capable GPU; HEVC NVENC
+        // only supports them on Turing+ and Pascal drivers fail init when asked
+        // for HEVC B-frames, so we keep -bf 0 on the HEVC path.
+        String bFrameOpt = (codec == VideoCodec.H264) ? " -bf 3" : "";
+        String nvencTuning = speedProfile
+                ? "-preset p1"
+                : "-preset p5 -tune hq -rc vbr -spatial-aq 1 -temporal-aq 1" + bFrameOpt;
         String encoder = null;
         boolean consumesFilters = false;
         if (encoders.contains(prefix + "_nvenc")) {
@@ -655,10 +689,10 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
             if (nvencAcceptsBgra) {
                 if (filterChain.isEmpty()) {
                     LOGGER.info("Using {} direct BGRA input path (opt-in); skipping CPU BGRA-to-NV12 filter before GPU upload.", nvencName);
-                    encoder = "-c:v " + nvencName + " -preset p1 -pix_fmt bgra";
+                    encoder = "-c:v " + nvencName + " " + nvencTuning + " -pix_fmt bgra";
                 } else {
                     LOGGER.info("Using {} BGRA input path with software filter chain (opt-in): {}", nvencName, filterChain);
-                    encoder = "-filter:v " + filterChain + " -c:v " + nvencName + " -preset p1 -pix_fmt bgra";
+                    encoder = "-filter:v " + filterChain + " -c:v " + nvencName + " " + nvencTuning + " -pix_fmt bgra";
                     consumesFilters = true;
                 }
             } else {
@@ -668,16 +702,26 @@ public class FFmpegWriter implements FrameConsumer<BitmapFrame> {
                     LOGGER.info("Using {} via CUDA NV12 upload (set -D{}=true to enable the BGRA fast path).",
                             nvencName, NVENC_BGRA_PROPERTY);
                 }
-                encoder = buildCudaUploadFilter(filters) + "-c:v " + nvencName + " -preset p1";
+                encoder = buildCudaUploadFilter(filters) + "-c:v " + nvencName + " " + nvencTuning;
                 consumesFilters = true;
             }
         } else if (encoders.contains(prefix + "_vaapi")) {
-            encoder = "-vaapi_device /dev/dri/renderD128 " + buildVaapiUploadFilter(filters) + "-c:v " + prefix + "_vaapi -qp 23";
+            // VAAPI: drop the bare `-qp 23` (ignored bitrate target, drifts low at high motion)
+            // in favour of a VBR rate-control aimed at the configured target bitrate.
+            String vaapiTuning = speedProfile
+                    ? "-rc_mode CBR"
+                    : "-rc_mode VBR -compression_level 1";
+            encoder = "-vaapi_device /dev/dri/renderD128 " + buildVaapiUploadFilter(filters)
+                    + "-c:v " + prefix + "_vaapi " + vaapiTuning;
             consumesFilters = true;
         } else if (encoders.contains(prefix + "_qsv")) {
-            encoder = "-c:v " + prefix + "_qsv -preset veryfast";
+            // QSV: `veryfast` is the lowest-quality preset; `slower` keeps the GPU pipeline
+            // saturated while matching libx264 veryfast quality at the same bitrate.
+            encoder = "-c:v " + prefix + "_qsv -preset " + (speedProfile ? "veryfast" : "slower");
         } else if (encoders.contains(prefix + "_amf")) {
-            encoder = "-c:v " + prefix + "_amf -quality speed";
+            // AMF: `speed` is the lowest-quality knob; `balanced` is the recommended
+            // offline-encoding profile for the AMD media engine.
+            encoder = "-c:v " + prefix + "_amf -quality " + (speedProfile ? "speed" : "balanced");
         } else if (encoders.contains(prefix + "_videotoolbox")) {
             encoder = "-c:v " + prefix + "_videotoolbox";
         }
